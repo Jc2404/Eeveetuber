@@ -3,7 +3,7 @@
 **Status:** Working architecture baseline  
 **Prepared:** 2026-08-19  
 **Scope reviewed:** Open-LLM-VTuber 1.2.1 at commit `3afa410`, BearCode at commit `335b293`, Letta Code 0.30.25 at commit `ee230f3`, plus the linked Claude Code, LangChain/LangGraph, and RAG references  
-**Implementation:** Phase 0 and the Phase 1 operator/binary-audio/provider/conversation-reliability slice are implemented; see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Microphone/VAD/ASR, Live2D, selected-image input, latency instrumentation, and soak validation remain for the Phase 1 gate.
+**Implementation:** Phase 0 and the Phase 1 operator/binary-audio/provider/conversation-reliability, overlapped dialogue, and integrated voice-ingress slices are implemented; see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Live2D, selected-image input, production latency instrumentation, and soak validation remain for the Phase 1 gate.
 **Intended use:** This is the editable source of truth for product scope, architecture decisions, requirements, and implementation phases. Update it as decisions are made; record consequential changes as ADRs rather than silently replacing their rationale.
 
 ---
@@ -500,6 +500,7 @@ Priorities: **P0** is required for the first usable vertical slice, **P1** for a
 | ID | Pri | Requirement | Acceptance evidence |
 |---|---:|---|---|
 | FR-CFG-001 | P0 | Validate configuration before runtime with versioned schemas, secret references, capability checks, and actionable errors. | Invalid-config fixture suite |
+| FR-CFG-002 | P0 | Every context, conversation-history, retrieval, and foreground deadline budget is configurable through validated process/profile settings; fast-lane limits must not require source edits. | Environment/config parsing tests plus composition-root wiring tests |
 | FR-PLUG-001 | P1 | Define versioned ports for model, ASR, TTS, avatar, platform, sensor, storage, memory, workflow, and tool adapters. | Adapter conformance tests |
 | FR-PLUG-002 | P2 | Trusted built-ins may run in process; third-party plugins default to isolated processes with narrow secrets, filesystem, network, and capability grants. | Isolation/integration tests |
 | FR-PLUG-003 | P2 | Plugin manifests declare API version, configuration schema, capabilities, permissions, health checks, and lifecycle hooks. | Manifest validator |
@@ -1365,6 +1366,10 @@ Each phase ends with a demonstrable vertical slice and a go/no-go gate. Avoid po
 - UtterancePlan, capability profile, PerformanceDirector, scheduler.
 - SQLite transcript/events, migrations, basic history UI, and stable message/event IDs.
 - P0 ContextSnapshotCompiler with owner-authored T0 canon, bounded T1 persona/session state, revision pinning, cache, and hot-only fallback. No background reflection yet.
+- Expose recent-history count, total-character, per-message, and local-read deadline bounds through validated `EEVEETUBER_HISTORY__*` settings. **Implemented.**
+- **TODO (Phase 2):** replace character heuristics with tokenizer-aware budgets and allow explicit per-mode/per-model history profiles while keeping every budget configurable.
+- **TODO (Phase 1 tuning):** expose sentence-size, segment/audio queue, and permitted TTS concurrency limits through validated `EEVEETUBER_DIALOGUE__*` settings after reference-profile latency/backpressure measurements; keep concurrency at one unless an adapter declares concurrent-call support.
+- Expose microphone framing, VAD thresholds/hysteresis/pre-roll, utterance byte/time limits, pending-utterance capacity, barge-in policy, and ASR coordination deadlines through validated `EEVEETUBER_VOICE__*` settings. **Implemented.** Cross-field validation guarantees integral PCM frames and enough byte/time capacity to reach speech onset. `EEVEETUBER_ASR__*` independently configures provider request/connect timeouts and byte limits; process validation prevents the voice utterance cap from exceeding the ASR input cap.
 - Operator mute/stop/neutral/kill controls.
 - Latency metrics, adapter health, E2E and soak tests.
 
@@ -1579,6 +1584,11 @@ The base is ready for feature expansion only when:
 
 ## 25. Change log
 
+- **2026-08-20:** Made the bounded session outbox lossless for current-generation output under ordinary pressure. Capacity waits no longer hold the generation gate, replacement cancellation wakes stale publishers promptly, and critical control events retain priority displacement.
+- **2026-08-20:** Replaced serial model-to-TTS consumption with bounded model/segment/TTS stages. Model streaming now overlaps earlier-segment speech while ordered delivery, adapter-stream validation, backpressure, cancellation, and task cleanup remain explicit. Added stale-generation filtering at server delivery and immediate browser playback cancellation.
+- **2026-08-20:** Connected the clean-room voice foundation end to end: EVIF v1 inbound PCM, explicit browser AudioWorklet capture/resampling, validated `EEVEETUBER_VOICE__*` bounds, per-session VAD/ASR coordination, stale-ASR supersession, exact-frame timing, non-displacing lossless control admission, and speech-onset generation cancellation. Partial ASR hypotheses remain stream-visible but are deliberately excluded from durable event storage. Added fake voice-turn and measured barge-in E2E tests.
+- **2026-08-20:** Added the clean-room voice-input foundation: immutable bounded PCM contracts, a per-instance energy VAD designed for session ownership, normalized streaming/final ASR port, metadata-only fake ASR, and a cancellation-safe OpenAI-compatible `/audio/transcriptions` adapter.
+- **2026-08-20:** Exposed current-session history count, total-character, per-message, and local-read deadline bounds through validated `EEVEETUBER_HISTORY__*` environment settings and wired them into each WebSocket session. Defaults remain 12/6000/1500/50 ms; tokenizer-aware per-mode/per-model profiles remain a Phase 2 TODO.
 - **2026-08-20:** Added explicit reasoning-off support for the low-latency Ollama/Qwen lane, bounded current-session history with deadline fallback, completion usage/stop diagnostics, readable zero-visible-output failure handling, asynchronously persisted/redacted event envelopes, and opt-in sequenced UTC text logs. No retry model or auxiliary AI check was inserted into the foreground path.
 - **2026-08-20:** Added the dependency-free operator console, negotiated EVAF v1 binary audio and typed status/playback contracts, configurable OpenAI-compatible model and speech adapters, keyless local model profile, active adapter cancellation/cleanup, packaged UI assets, and expanded contract/E2E tests. The default path remains network-free and no auxiliary AI service was added.
 - **2026-08-19:** Implemented the greenfield Python backbone: owned event/session/cancellation contracts, bounded priority mailboxes, context snapshots, typed memory admission and SQLite revisions/FTS, incremental dialogue and fake TTS/model adapters, semantic avatar arbitration, versioned FastAPI/WebSocket tracer, migrations, provenance policy, ADRs, architecture checks, and automated tests.

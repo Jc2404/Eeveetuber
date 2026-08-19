@@ -23,6 +23,11 @@ _STATUS_PROJECTIONS: dict[str, tuple[StatusScope, StatusCode]] = {
     "speech.cancelled": (StatusScope.AUDIO, StatusCode.READY),
     "utterance.completed": (StatusScope.TURN, StatusCode.READY),
     "turn.failed": (StatusScope.TURN, StatusCode.ERROR),
+    "voice.capture_started": (StatusScope.SESSION, StatusCode.LISTENING),
+    "voice.capture_stopped": (StatusScope.SESSION, StatusCode.READY),
+    "voice.speech_started": (StatusScope.TURN, StatusCode.LISTENING),
+    "voice.transcript_final": (StatusScope.TURN, StatusCode.PROCESSING),
+    "voice.recognition_failed": (StatusScope.TURN, StatusCode.ERROR),
 }
 
 

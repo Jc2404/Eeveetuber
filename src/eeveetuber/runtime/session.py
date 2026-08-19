@@ -62,7 +62,11 @@ class SessionSubmission:
 
     @property
     def accepted(self) -> bool:
-        return self.outcome is not PutOutcome.REJECTED_FULL
+        return self.outcome in {
+            PutOutcome.ACCEPTED,
+            PutOutcome.COALESCED,
+            PutOutcome.EVICTED_LOWEST,
+        }
 
 
 class SessionHandler(Protocol):
@@ -252,6 +256,21 @@ class SessionActor:
                 token = self._cancellation.ensure_current(self.current_generation)
                 return await self._submit_with_token(event, token)
 
+    async def submit_wait(self, event: EventEnvelope) -> SessionSubmission:
+        """Backpressure a low-frequency command while its generation remains current.
+
+        The potentially unbounded capacity wait deliberately happens outside the
+        submission lock so a foreground replacement can always advance cancellation.
+        A replacement returns a ``CANCELLED`` submission instead of admitting stale work.
+        """
+
+        async with self._submission_lock:
+            self._ensure_running()
+            async with self._generation_gate:
+                token = self._cancellation.ensure_current(self.current_generation)
+                stamped = await self._stamp(event)
+        return await self._submit_stamped_wait(stamped, token)
+
     async def submit_foreground_turn(
         self,
         event: EventEnvelope,
@@ -271,24 +290,58 @@ class SessionActor:
                 token = self._cancellation.advance(reason)
                 return await self._submit_with_token(event, token)
 
+    async def submit_foreground_turn_wait(
+        self,
+        event: EventEnvelope,
+        *,
+        reason: str = "foreground turn replaced",
+    ) -> SessionSubmission:
+        """Cancel old work, then await admission while this replacement remains current.
+
+        A still-newer foreground turn can supersede this waiting submission and makes it
+        return ``CANCELLED`` rather than delaying the newer generation.
+        """
+
+        async with self._submission_lock:
+            self._ensure_running()
+            async with self._generation_gate:
+                token = self._cancellation.advance(reason)
+                stamped = await self._stamp(event)
+        return await self._submit_stamped_wait(stamped, token)
+
     async def publish_result(
         self,
         event: EventEnvelope,
         generation: CancellationGeneration,
     ) -> bool:
-        """Publish only if ``generation`` is current at the outbox commit point."""
+        """Backpressure current output and reject it if its generation expires.
+
+        The generation gate is held only while snapshotting and stamping. Waiting
+        for transport capacity happens in the mailbox, whose synchronous
+        ``accept_if`` check protects the eventual commit point.
+        """
 
         async with self._generation_gate:
             try:
-                self._cancellation.ensure_current(generation)
+                token = self._cancellation.ensure_current(generation)
             except StaleGenerationError:
                 self._stale_results += 1
                 return False
             stamped = await self._stamp(event)
-            result = await self._outbox.put(stamped)
-            if result.accepted:
-                self._observe_event(stamped)
-            return result.accepted
+        try:
+            result = await self._outbox.put_wait(
+                stamped,
+                cancel_waiter=token.wait_cancelled,
+                accept_if=lambda: self._cancellation.accepts(generation),
+            )
+        except MailboxClosed:
+            return False
+        if not result.accepted:
+            if result.outcome is PutOutcome.CANCELLED:
+                self._stale_results += 1
+            return False
+        self._observe_event(stamped)
+        return True
 
     async def receive_output(self) -> EventEnvelope:
         """Receive the next priority/FIFO output for a transport adapter."""
@@ -382,6 +435,28 @@ class SessionActor:
         stamped = await self._stamp(event)
         message = SessionMessage(stamped, token)
         result: PutResult[SessionMessage] = await self._inbox.put(message)
+        if result.accepted:
+            self._observe_event(stamped)
+        displaced_id = result.displaced.event.event_id if result.displaced else None
+        return SessionSubmission(
+            generation=token.generation,
+            event=stamped,
+            outcome=result.outcome,
+            displaced_event_id=displaced_id,
+        )
+
+    async def _submit_stamped_wait(
+        self,
+        stamped: EventEnvelope,
+        token: CancellationToken,
+    ) -> SessionSubmission:
+        message = SessionMessage(stamped, token)
+        result: PutResult[SessionMessage] = await self._inbox.put_wait(
+            message,
+            cancel_waiter=token.wait_cancelled,
+            accept_if=lambda: self._cancellation.accepts(token.generation),
+            allow_priority_displacement=False,
+        )
         if result.accepted:
             self._observe_event(stamped)
         displaced_id = result.displaced.event.event_id if result.displaced else None

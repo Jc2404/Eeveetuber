@@ -121,6 +121,97 @@ async def test_replacement_turn_rejects_late_child_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_current_results_backpressure_then_deliver_fifo_at_capacity_one() -> None:
+    async def handler(_context: SessionActorContext, _message: SessionMessage) -> None:
+        return
+
+    actor = SessionActor(handler, outbox_capacity=1)
+    await actor.start()
+    generation = actor.current_generation
+    assert await actor.publish_result(EventEnvelope.create("test.output_first"), generation)
+    second_publish = asyncio.create_task(
+        actor.publish_result(EventEnvelope.create("test.output_second"), generation)
+    )
+    await asyncio.sleep(0)
+
+    assert not second_publish.done()
+    first = await actor.receive_output()
+    assert await asyncio.wait_for(second_publish, timeout=0.2)
+    second = await actor.receive_output()
+
+    assert [first.type, second.type] == ["test.output_first", "test.output_second"]
+    assert [first.sequence, second.sequence] == [0, 1]
+    await actor.stop()
+
+
+@pytest.mark.asyncio
+async def test_replacement_cancels_blocked_old_generation_publish_promptly() -> None:
+    async def handler(_context: SessionActorContext, _message: SessionMessage) -> None:
+        return
+
+    actor = SessionActor(handler, outbox_capacity=1)
+    await actor.start()
+    old_generation = actor.current_generation
+    assert await actor.publish_result(EventEnvelope.create("test.output_queued"), old_generation)
+    blocked = asyncio.create_task(
+        actor.publish_result(EventEnvelope.create("test.output_blocked"), old_generation)
+    )
+    await asyncio.sleep(0)
+    assert not blocked.done()
+
+    replacement = await actor.submit_foreground_turn(EventEnvelope.create("turn.replacement"))
+
+    assert replacement.generation == CancellationGeneration(1)
+    assert not await asyncio.wait_for(blocked, timeout=0.2)
+    assert actor.stale_results == 1
+    assert (await actor.receive_output()).type == "test.output_queued"
+    await actor.stop()
+
+
+@pytest.mark.asyncio
+async def test_critical_control_result_displaces_lower_priority_queued_output() -> None:
+    async def handler(_context: SessionActorContext, _message: SessionMessage) -> None:
+        return
+
+    actor = SessionActor(handler, outbox_capacity=1)
+    await actor.start()
+    generation = actor.current_generation
+    assert await actor.publish_result(
+        EventEnvelope.create("speech.audio_chunk", priority=EventPriority.NORMAL),
+        generation,
+    )
+
+    assert await actor.publish_result(
+        EventEnvelope.create("operator.kill", priority=EventPriority.CRITICAL),
+        generation,
+    )
+
+    assert (await actor.receive_output()).type == "operator.kill"
+    assert actor.outbox_size == 0
+    await actor.stop()
+
+
+@pytest.mark.asyncio
+async def test_actor_stop_wakes_blocked_output_publish_without_deadlock() -> None:
+    async def handler(_context: SessionActorContext, _message: SessionMessage) -> None:
+        return
+
+    actor = SessionActor(handler, outbox_capacity=1)
+    await actor.start()
+    generation = actor.current_generation
+    assert await actor.publish_result(EventEnvelope.create("test.output_queued"), generation)
+    blocked = asyncio.create_task(
+        actor.publish_result(EventEnvelope.create("test.output_blocked"), generation)
+    )
+    await asyncio.sleep(0)
+
+    await actor.stop(graceful=False, timeout=0.2)
+
+    assert not await asyncio.wait_for(blocked, timeout=0.2)
+    assert actor.lifecycle is SessionLifecycle.STOPPED
+
+
+@pytest.mark.asyncio
 async def test_session_inbox_pressure_evicts_newest_low_priority_item() -> None:
     handler_entered = asyncio.Event()
     release_handler = asyncio.Event()
@@ -156,6 +247,208 @@ async def test_session_inbox_pressure_evicts_newest_low_priority_item() -> None:
     release_handler.set()
     await two_seen.wait()
     assert seen == ["blocking", "high"]
+    await actor.stop()
+
+
+@pytest.mark.asyncio
+async def test_lossless_command_submission_waits_for_actor_inbox_capacity() -> None:
+    handler_entered = asyncio.Event()
+    release_handler = asyncio.Event()
+    all_seen = asyncio.Event()
+    seen: list[str] = []
+
+    async def handler(_context: SessionActorContext, message: SessionMessage) -> None:
+        name = str(message.event.payload["name"])
+        seen.append(name)
+        if name == "blocking":
+            handler_entered.set()
+            await release_handler.wait()
+        if len(seen) == 3:
+            all_seen.set()
+
+    actor = SessionActor(handler, inbox_capacity=1)
+    await actor.start()
+    await actor.submit_wait(EventEnvelope.create("test.command", {"name": "blocking"}))
+    await handler_entered.wait()
+    await actor.submit_wait(EventEnvelope.create("test.command", {"name": "queued"}))
+    waiting = asyncio.create_task(
+        actor.submit_wait(EventEnvelope.create("test.command", {"name": "waiting"}))
+    )
+    await asyncio.sleep(0)
+
+    assert not waiting.done()
+    release_handler.set()
+    submission = await asyncio.wait_for(waiting, timeout=0.2)
+    await asyncio.wait_for(all_seen.wait(), timeout=0.2)
+
+    assert submission.accepted
+    assert seen == ["blocking", "queued", "waiting"]
+    await actor.stop()
+
+
+@pytest.mark.asyncio
+async def test_blocked_lossless_submission_cannot_prevent_foreground_barge_in() -> None:
+    second_publish_started = asyncio.Event()
+    foreground_seen = asyncio.Event()
+    publication_results: list[bool] = []
+    seen: list[str] = []
+
+    async def handler(context: SessionActorContext, message: SessionMessage) -> None:
+        name = str(message.event.payload["name"])
+        seen.append(name)
+        if name == "publishing":
+            assert await context.publish(EventEnvelope.create("test.output_queued"))
+            second_publish_started.set()
+            publication_results.append(
+                await context.publish(EventEnvelope.create("test.output_blocked"))
+            )
+        elif name == "foreground":
+            foreground_seen.set()
+
+    actor = SessionActor(handler, inbox_capacity=1, outbox_capacity=1)
+    await actor.start()
+    await actor.submit_wait(
+        EventEnvelope.create("test.command", {"name": "publishing"})
+    )
+    await second_publish_started.wait()
+    await asyncio.sleep(0)
+
+    queued = await actor.submit_wait(
+        EventEnvelope.create("test.command", {"name": "queued"})
+    )
+    stale_wait = asyncio.create_task(
+        actor.submit_wait(EventEnvelope.create("test.command", {"name": "waiting"}))
+    )
+    await asyncio.sleep(0)
+    assert queued.accepted
+    assert actor.inbox_size == 1
+    assert actor.outbox_size == 1
+    assert not stale_wait.done()
+
+    foreground_wait = asyncio.create_task(
+        actor.submit_foreground_turn_wait(
+            EventEnvelope.create("test.command", {"name": "foreground"}),
+            reason="voice barge-in",
+        )
+    )
+    stale_submission = await asyncio.wait_for(stale_wait, timeout=0.2)
+    foreground_submission = await asyncio.wait_for(foreground_wait, timeout=0.2)
+    await asyncio.wait_for(foreground_seen.wait(), timeout=0.2)
+
+    assert actor.current_generation == CancellationGeneration(1)
+    assert stale_submission.outcome is PutOutcome.CANCELLED
+    assert not stale_submission.accepted
+    assert foreground_submission.outcome is PutOutcome.ACCEPTED
+    assert foreground_submission.accepted
+    assert foreground_submission.generation == CancellationGeneration(1)
+    assert publication_results == [False]
+    assert seen == ["publishing", "queued", "foreground"]
+    assert (await actor.receive_output()).type == "test.output_queued"
+    await actor.stop()
+
+
+@pytest.mark.asyncio
+async def test_new_foreground_supersedes_foreground_waiting_for_inbox_capacity() -> None:
+    handler_entered = asyncio.Event()
+    release_handler = asyncio.Event()
+    newest_seen = asyncio.Event()
+    seen: list[str] = []
+
+    async def handler(_context: SessionActorContext, message: SessionMessage) -> None:
+        name = str(message.event.payload["name"])
+        seen.append(name)
+        if name == "blocking":
+            handler_entered.set()
+            await release_handler.wait()
+        elif name == "newest":
+            newest_seen.set()
+
+    actor = SessionActor(handler, inbox_capacity=1)
+    await actor.start()
+    await actor.submit_wait(EventEnvelope.create("test.command", {"name": "blocking"}))
+    await handler_entered.wait()
+    await actor.submit_wait(EventEnvelope.create("test.command", {"name": "queued"}))
+
+    older_foreground = asyncio.create_task(
+        actor.submit_foreground_turn_wait(
+            EventEnvelope.create("test.command", {"name": "older"})
+        )
+    )
+    await asyncio.sleep(0)
+    assert actor.current_generation == CancellationGeneration(1)
+    assert not older_foreground.done()
+
+    newest_foreground = asyncio.create_task(
+        actor.submit_foreground_turn_wait(
+            EventEnvelope.create("test.command", {"name": "newest"})
+        )
+    )
+    older_submission = await asyncio.wait_for(older_foreground, timeout=0.2)
+
+    assert actor.current_generation == CancellationGeneration(2)
+    assert older_submission.outcome is PutOutcome.CANCELLED
+    assert not older_submission.accepted
+    assert not newest_foreground.done()
+
+    release_handler.set()
+    newest_submission = await asyncio.wait_for(newest_foreground, timeout=0.2)
+    await asyncio.wait_for(newest_seen.wait(), timeout=0.2)
+
+    assert newest_submission.accepted
+    assert newest_submission.generation == CancellationGeneration(2)
+    assert seen == ["blocking", "queued", "newest"]
+    await actor.stop()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_wait_cannot_evict_an_accepted_foreground_turn() -> None:
+    handler_entered = asyncio.Event()
+    release_handler = asyncio.Event()
+    all_seen = asyncio.Event()
+    seen: list[str] = []
+
+    async def handler(_context: SessionActorContext, message: SessionMessage) -> None:
+        name = str(message.event.payload["name"])
+        seen.append(name)
+        if name == "blocking":
+            handler_entered.set()
+            await release_handler.wait()
+        if len(seen) == 3:
+            all_seen.set()
+
+    actor = SessionActor(handler, inbox_capacity=1)
+    await actor.start()
+    await actor.submit_wait(EventEnvelope.create("test.command", {"name": "blocking"}))
+    await handler_entered.wait()
+    foreground = await actor.submit_foreground_turn(
+        EventEnvelope.create(
+            "turn.requested",
+            {"name": "foreground"},
+            priority=EventPriority.HIGH,
+        )
+    )
+    lifecycle_wait = asyncio.create_task(
+        actor.submit_wait(
+            EventEnvelope.create(
+                "voice.capture_stopped",
+                {"name": "lifecycle"},
+                priority=EventPriority.CRITICAL,
+            )
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert foreground.accepted
+    assert actor.inbox_size == 1
+    assert not lifecycle_wait.done()
+
+    release_handler.set()
+    lifecycle = await asyncio.wait_for(lifecycle_wait, timeout=0.2)
+    await asyncio.wait_for(all_seen.wait(), timeout=0.2)
+
+    assert lifecycle.outcome is PutOutcome.ACCEPTED
+    assert lifecycle.displaced_event_id is None
+    assert seen == ["blocking", "foreground", "lifecycle"]
     await actor.stop()
 
 

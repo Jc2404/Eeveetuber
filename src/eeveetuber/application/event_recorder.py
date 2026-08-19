@@ -37,6 +37,7 @@ class AsyncEventRecorder:
     _DISPLACEABLE = frozenset(
         {RetentionClass.EPHEMERAL_MEDIA, RetentionClass.OPERATIONAL_TRACE}
     )
+    _NEVER_PERSIST = frozenset({"voice.transcript_partial"})
 
     def __init__(self, sink: EventRecordSink, *, capacity: int = 8_192) -> None:
         if capacity < 1:
@@ -71,6 +72,11 @@ class AsyncEventRecorder:
     def observe(self, event: EventEnvelope) -> None:
         """Enqueue one event synchronously; suitable for ``SessionActor`` callbacks."""
 
+        # Interim ASR hypotheses may contain abandoned or misheard private speech.
+        # Filter by semantic event type as a defense against an upstream retention
+        # regression; partial text must never enter the durable event journal.
+        if event.type in self._NEVER_PERSIST:
+            return
         if self._closed:
             self._dropped += 1
             return

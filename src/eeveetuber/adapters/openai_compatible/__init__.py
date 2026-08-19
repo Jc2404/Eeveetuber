@@ -1,5 +1,15 @@
 """HTTP adapters for the OpenAI-compatible API surface."""
 
+from eeveetuber.adapters.openai_compatible.asr import (
+    AsrAdapterClosed,
+    AsrAdapterError,
+    AsrHTTPError,
+    AsrProtocolError,
+    AsrTimeoutError,
+    AsrTransportError,
+    OpenAICompatibleAsrConfig,
+    OpenAICompatibleSpeechRecognizer,
+)
 from eeveetuber.adapters.openai_compatible.model import (
     ModelHTTPError,
     ModelProtocolError,
@@ -22,13 +32,21 @@ from eeveetuber.adapters.openai_compatible.speech import (
 )
 
 __all__ = [
+    "AsrAdapterClosed",
+    "AsrAdapterError",
+    "AsrHTTPError",
+    "AsrProtocolError",
+    "AsrTimeoutError",
+    "AsrTransportError",
     "ModelHTTPError",
     "ModelProtocolError",
     "ModelTransportError",
+    "OpenAICompatibleAsrConfig",
     "OpenAICompatibleModelConfig",
     "OpenAICompatibleModelError",
     "OpenAICompatibleModelProvider",
     "OpenAICompatibleSpeechConfig",
+    "OpenAICompatibleSpeechRecognizer",
     "OpenAICompatibleSpeechSynthesizer",
     "ReasoningEffort",
     "SpeechAdapterClosed",

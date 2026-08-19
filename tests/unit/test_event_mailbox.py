@@ -120,9 +120,105 @@ async def test_close_can_drain_or_discard_and_wakes_waiters() -> None:
     assert full.stats.discarded_on_close == 2
 
 
+@pytest.mark.asyncio
+async def test_waiting_put_backpressures_until_get_frees_capacity() -> None:
+    mailbox = PriorityMailbox[Item](1, overflow=OverflowPolicy.DROP_LOWEST)
+    await mailbox.put(Item("first", 10))
+    waiting = asyncio.create_task(mailbox.put_wait(Item("second", 10)))
+    await asyncio.sleep(0)
+
+    assert not waiting.done()
+    assert (await mailbox.get()).name == "first"
+    result = await asyncio.wait_for(waiting, timeout=0.2)
+
+    assert result.outcome is PutOutcome.ACCEPTED
+    assert (await mailbox.get()).name == "second"
+    assert mailbox.stats.rejected == 0
+
+
+@pytest.mark.asyncio
+async def test_waiting_put_is_cancellable_without_mutating_queue() -> None:
+    mailbox = PriorityMailbox[Item](1)
+    await mailbox.put(Item("queued"))
+    cancelled = asyncio.Event()
+    waiting = asyncio.create_task(
+        mailbox.put_wait(Item("blocked"), cancel_waiter=cancelled.wait)
+    )
+    await asyncio.sleep(0)
+
+    cancelled.set()
+    result = await asyncio.wait_for(waiting, timeout=0.2)
+
+    assert result.outcome is PutOutcome.CANCELLED
+    assert not result.accepted
+    assert (await mailbox.get()).name == "queued"
+    assert mailbox.stats.cancelled == 1
+
+
+@pytest.mark.asyncio
+async def test_waiting_put_keeps_immediate_high_priority_displacement() -> None:
+    mailbox = PriorityMailbox[Item](1, overflow=OverflowPolicy.DROP_LOWEST)
+    await mailbox.put(Item("normal", 10))
+
+    result = await mailbox.put_wait(Item("critical", 100))
+
+    assert result.outcome is PutOutcome.EVICTED_LOWEST
+    assert result.displaced == Item("normal", 10)
+    assert (await mailbox.get()).name == "critical"
+
+
+@pytest.mark.asyncio
+async def test_non_displacing_wait_preserves_accepted_item_until_capacity_exists() -> None:
+    mailbox = PriorityMailbox[Item](1, overflow=OverflowPolicy.DROP_LOWEST)
+    await mailbox.put(Item("accepted-high", 50))
+    waiting = asyncio.create_task(
+        mailbox.put_wait(
+            Item("waiting-critical", 100),
+            allow_priority_displacement=False,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert not waiting.done()
+    assert mailbox.qsize == 1
+    assert mailbox.stats.evicted == 0
+    assert (await mailbox.get()).name == "accepted-high"
+
+    result = await asyncio.wait_for(waiting, timeout=0.2)
+    assert result.outcome is PutOutcome.ACCEPTED
+    assert result.displaced is None
+    assert (await mailbox.get()).name == "waiting-critical"
+
+
+@pytest.mark.asyncio
+async def test_close_wakes_waiting_put_without_deadlock() -> None:
+    mailbox = PriorityMailbox[Item](1)
+    await mailbox.put(Item("queued"))
+    waiting = asyncio.create_task(mailbox.put_wait(Item("blocked")))
+    await asyncio.sleep(0)
+
+    await mailbox.close()
+
+    with pytest.raises(MailboxClosed):
+        await asyncio.wait_for(waiting, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_external_task_cancellation_leaves_mailbox_usable() -> None:
+    mailbox = PriorityMailbox[Item](1)
+    await mailbox.put(Item("queued"))
+    waiting = asyncio.create_task(mailbox.put_wait(Item("blocked")))
+    await asyncio.sleep(0)
+
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert (await mailbox.get()).name == "queued"
+    assert (await mailbox.put(Item("replacement"))).accepted
+
+
 def test_mailbox_configuration_is_validated() -> None:
     with pytest.raises(ValueError, match="capacity"):
         PriorityMailbox[Item](0)
     with pytest.raises(ValueError, match="coalesce_key"):
         PriorityMailbox[Item](1, overflow=OverflowPolicy.COALESCE)
-

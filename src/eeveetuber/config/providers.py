@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
@@ -29,6 +30,64 @@ class SpeechOutputFormat(StrEnum):
     FLAC = "flac"
     WAV = "wav"
     PCM = "pcm"
+
+
+class AsrAdapterSettings(BaseModel):
+    """Configuration for fake or OpenAI-compatible speech recognition."""
+
+    provider: AdapterProvider = AdapterProvider.FAKE
+    base_url: str = "https://api.openai.com/v1"
+    api_key: SecretStr | None = None
+    model: str | None = "whisper-1"
+    language: str | None = None
+    prompt: str | None = None
+    temperature: float | None = Field(default=None, ge=0, le=1)
+    request_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    connect_timeout_seconds: float = Field(default=5.0, gt=0, le=120)
+    max_input_pcm_bytes: int = Field(
+        default=64 * 1_024 * 1_024,
+        ge=2,
+        le=512 * 1_024 * 1_024,
+    )
+    max_response_bytes: int = Field(
+        default=1 * 1_024 * 1_024,
+        ge=64,
+        le=64 * 1_024 * 1_024,
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str) -> str:
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("base_url must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("base_url must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("base_url must not contain a query or fragment")
+        return normalized
+
+    @field_validator("api_key")
+    @classmethod
+    def nonblank_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None:
+            raw_value = value.get_secret_value()
+            if not raw_value or raw_value.strip() != raw_value:
+                raise ValueError(
+                    "api_key must be non-empty and trimmed; use None for local endpoints"
+                )
+        return value
+
+    @field_validator("model", "language", "prompt")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("optional ASR text settings cannot be blank")
+        return normalized
 
 
 class ModelAdapterSettings(BaseModel):
@@ -99,6 +158,7 @@ class SpeechAdapterSettings(BaseModel):
 
 __all__ = [
     "AdapterProvider",
+    "AsrAdapterSettings",
     "ModelAdapterSettings",
     "ReasoningEffortSetting",
     "SpeechAdapterSettings",

@@ -16,7 +16,7 @@ from eeveetuber.config.character import CharacterContext, CharacterProfile
 from eeveetuber.config.settings import ContextBudgetSettings
 from eeveetuber.memory import ContextCompiler, ContextSnapshotCache
 from eeveetuber.runtime import SessionSupervisor
-from eeveetuber.storage import MessageRole, SqliteDatabase, SqliteStore
+from eeveetuber.storage import MessageRecord, MessageRole, SqliteDatabase, SqliteStore
 
 
 async def receive_completion(session: ForegroundSession) -> None:
@@ -25,6 +25,24 @@ async def receive_completion(session: ForegroundSession) -> None:
         assert event.type != "turn.failed", event.payload
         if event.type == "utterance.completed":
             return
+
+
+async def wait_for_persisted_messages(
+    store: SqliteStore,
+    session: ForegroundSession,
+    *,
+    timeout: float = 2.0,
+) -> tuple[MessageRecord, ...]:
+    """Observe the deliberately off-path SQLite write without assuming its latency."""
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        records = tuple(store.messages.list_session(str(session.session_id)))
+        if records:
+            return records
+        if asyncio.get_running_loop().time() >= deadline:
+            pytest.fail("conversation message was not persisted before the test deadline")
+        await asyncio.sleep(0.01)
 
 
 async def make_session(
@@ -110,11 +128,7 @@ async def test_empty_model_output_never_persists_blank_assistant_message(tmp_pat
             if terminal.type == "turn.failed":
                 break
         assert terminal.payload["error_type"] == "ModelEmptyOutput"
-        for _attempt in range(50):
-            records = store.messages.list_session(str(session.session_id))
-            if records:
-                break
-            await asyncio.sleep(0.002)
+        records = await wait_for_persisted_messages(store, session)
 
         assert [(record.role, record.content) for record in records] == [
             (MessageRole.USER, "Keep only this user message")

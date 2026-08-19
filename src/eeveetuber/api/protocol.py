@@ -30,6 +30,24 @@ class CancelTurnMessage(_ClientMessageBase):
     reason: str = Field(default="user_requested", max_length=200)
 
 
+class VoiceCaptureStartMessage(_ClientMessageBase):
+    """Open one explicitly identified PCM capture stream on this WebSocket."""
+
+    type: Literal["voice.capture.start"]
+    stream_id: UUID
+    sample_rate_hz: int = Field(ge=8_000, le=192_000)
+    channels: int = Field(default=1, ge=1, le=8)
+    encoding: Literal["pcm_s16le"] = "pcm_s16le"
+
+
+class VoiceCaptureStopMessage(_ClientMessageBase):
+    """Flush and close the matching capture stream after all prior binary frames."""
+
+    type: Literal["voice.capture.stop"]
+    stream_id: UUID
+    reason: str = Field(default="operator_requested", min_length=1, max_length=200)
+
+
 class PingMessage(_ClientMessageBase):
     type: Literal["ping"]
 
@@ -58,20 +76,65 @@ class PlaybackAckMessage(_ClientMessageBase):
     audio_event_id: UUID
     generation: int = Field(ge=0)
     event_sequence: int = Field(ge=0)
+    turn_id: UUID | None = None
     segment_id: UUID
     chunk_index: int = Field(ge=0)
+    is_final: bool = False
     state: PlaybackState
     client_monotonic_ms: int = Field(ge=0)
     played_ms: int | None = Field(default=None, ge=0)
     detail: str | None = Field(default=None, max_length=500)
 
 
+class AvatarRendererState(StrEnum):
+    """Browser renderer availability; dialogue remains usable in every state."""
+
+    READY = "ready"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+
+
+class AvatarRendererStatusMessage(_ClientMessageBase):
+    """Renderer handshake/health reported after processing session capabilities."""
+
+    type: Literal["avatar.renderer.status"]
+    avatar_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_-]+$")
+    revision: str = Field(min_length=1, max_length=128)
+    state: AvatarRendererState
+    client_monotonic_ms: int = Field(ge=0)
+    detail: str | None = Field(default=None, max_length=500)
+
+
+class AvatarPresentationAckState(StrEnum):
+    APPLIED = "applied"
+    IGNORED = "ignored"
+    FAILED = "failed"
+
+
+class AvatarPresentationAckMessage(_ClientMessageBase):
+    """Correlate one browser presentation result with its scheduler command."""
+
+    type: Literal["avatar.presentation.ack"]
+    avatar_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_-]+$")
+    revision: str = Field(min_length=1, max_length=128)
+    command_id: UUID
+    generation: int = Field(ge=0)
+    scheduler_sequence: int = Field(ge=0)
+    state: AvatarPresentationAckState
+    client_monotonic_ms: int = Field(ge=0)
+    detail: str | None = Field(default=None, max_length=500)
+
+
 type ClientMessage = Annotated[
     TextTurnMessage
     | CancelTurnMessage
+    | VoiceCaptureStartMessage
+    | VoiceCaptureStopMessage
     | PingMessage
     | OperatorControlMessage
-    | PlaybackAckMessage,
+    | PlaybackAckMessage
+    | AvatarRendererStatusMessage
+    | AvatarPresentationAckMessage,
     Field(discriminator="type"),
 ]
 

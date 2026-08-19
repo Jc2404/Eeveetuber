@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
-from eeveetuber.adapters.fake import FakeModelProvider, FakeSpeechSynthesizer
+from eeveetuber.adapters.fake import (
+    FakeModelProvider,
+    FakeSpeechRecognizer,
+    FakeSpeechSynthesizer,
+)
 from eeveetuber.adapters.openai_compatible import (
+    OpenAICompatibleAsrConfig,
     OpenAICompatibleModelConfig,
     OpenAICompatibleModelProvider,
     OpenAICompatibleSpeechConfig,
+    OpenAICompatibleSpeechRecognizer,
     OpenAICompatibleSpeechSynthesizer,
     ReasoningEffort,
     SpeechAudioFormat,
 )
-from eeveetuber.config import AdapterProvider, ModelAdapterSettings, SpeechAdapterSettings
+from eeveetuber.config import (
+    AdapterProvider,
+    AsrAdapterSettings,
+    ModelAdapterSettings,
+    SpeechAdapterSettings,
+)
 from eeveetuber.dialogue.ports import ModelProvider, SpeechSynthesizer
+from eeveetuber.media import SpeechRecognizer
 
 
 def create_model_provider(settings: ModelAdapterSettings) -> ModelProvider:
@@ -68,6 +80,29 @@ def create_speech_synthesizer(settings: SpeechAdapterSettings) -> SpeechSynthesi
     raise ValueError(f"unsupported speech provider {settings.provider!r}")
 
 
+def create_speech_recognizer(settings: AsrAdapterSettings) -> SpeechRecognizer:
+    """Create one session-owned ASR adapter without performing network I/O."""
+
+    if settings.provider is AdapterProvider.FAKE:
+        return FakeSpeechRecognizer()
+    if settings.provider is AdapterProvider.OPENAI_COMPATIBLE:
+        return OpenAICompatibleSpeechRecognizer(
+            OpenAICompatibleAsrConfig(
+                base_url=settings.base_url,
+                api_key=_secret_value(settings.api_key),
+                model=settings.model,
+                language=settings.language,
+                prompt=settings.prompt,
+                temperature=settings.temperature,
+                timeout_seconds=settings.request_timeout_seconds,
+                connect_timeout_seconds=settings.connect_timeout_seconds,
+                max_input_pcm_bytes=settings.max_input_pcm_bytes,
+                max_response_bytes=settings.max_response_bytes,
+            )
+        )
+    raise ValueError(f"unsupported ASR provider {settings.provider!r}")
+
+
 def _secret_value(secret: object) -> str | None:
     if secret is None:
         return None
@@ -80,4 +115,8 @@ def _secret_value(secret: object) -> str | None:
     return value
 
 
-__all__ = ["create_model_provider", "create_speech_synthesizer"]
+__all__ = [
+    "create_model_provider",
+    "create_speech_recognizer",
+    "create_speech_synthesizer",
+]

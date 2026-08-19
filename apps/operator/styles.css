@@ -31,6 +31,7 @@ header { justify-content: space-between; }
 h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 0; font-size: clamp(1.6rem, 5vw, 2.4rem); }
 h2 { margin-bottom: 1rem; font-size: 1rem; }
+h3 { margin: 0; font-size: 0.95rem; }
 .eyebrow { margin-bottom: 0.25rem; color: #a89cff; text-transform: uppercase; letter-spacing: 0.16em; }
 
 .panel {
@@ -68,6 +69,31 @@ button.danger { border-color: #bb4c58; background: #7c2933; }
 button.quiet { margin-left: auto; padding: 0.35rem 0.6rem; background: transparent; }
 
 .control-grid { flex-wrap: wrap; }
+.microphone {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #2a3040;
+}
+.microphone .section-heading { margin-bottom: 0.75rem; }
+.mic-state { margin-left: auto; color: #b9c3d8; font-size: 0.85rem; }
+.mic-state.listening { color: #aaf3d2; }
+.mic-state.error { color: #ffc2c9; }
+.transcript-line {
+  min-height: 2.8rem;
+  margin: 0.8rem 0 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid #30384b;
+  border-radius: 0.55rem;
+  background: #101520;
+}
+.transcript-label {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: #8f9ab3;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
 .status { padding: 0.45rem 0.7rem; border-radius: 999px; background: #263044; }
 .status.connected { background: #174a38; color: #aaf3d2; }
 .status.processing { background: #594718; color: #ffdfa0; }

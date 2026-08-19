@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self'; media-src 'self' blob:"
+      content="default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; worker-src 'self'; style-src 'self'; media-src 'self' blob:"
     />
     <title>Eeveetuber Operator</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -36,6 +36,20 @@
           <button data-action="neutral_avatar" type="button">Neutral avatar</button>
           <button data-action="kill_session" class="danger" type="button">Kill session</button>
           <button id="audio-toggle" aria-pressed="true" type="button">Audio enabled</button>
+        </div>
+        <div class="microphone" role="group" aria-labelledby="microphone-title">
+          <div class="section-heading">
+            <h3 id="microphone-title">Voice input</h3>
+            <output id="mic-state" class="mic-state" aria-live="polite">Microphone idle</output>
+          </div>
+          <div class="control-grid">
+            <button id="mic-start" type="button" disabled>Start microphone</button>
+            <button id="mic-stop" class="warning" type="button" disabled>Stop microphone</button>
+          </div>
+          <p class="transcript-line">
+            <span class="transcript-label">Live transcript</span>
+            <output id="mic-transcript" aria-live="polite">No speech recognized yet.</output>
+          </p>
         </div>
       </section>
 

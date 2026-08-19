@@ -8,6 +8,12 @@ from eeveetuber.application.conversation_history import (
 )
 from eeveetuber.application.event_recorder import AsyncEventRecorder, EventRecorderStats
 from eeveetuber.application.foreground_session import ForegroundSession
+from eeveetuber.application.voice_input import (
+    VoiceCaptureStateError,
+    VoiceInputCoordinator,
+    VoiceInputPolicy,
+    VoiceRecognitionProtocolError,
+)
 
 __all__ = [
     "AsyncEventRecorder",
@@ -17,4 +23,8 @@ __all__ = [
     "RecentConversationHistory",
     "RecentConversationHistoryCompiler",
     "RecentConversationHistoryPolicy",
+    "VoiceCaptureStateError",
+    "VoiceInputCoordinator",
+    "VoiceInputPolicy",
+    "VoiceRecognitionProtocolError",
 ]

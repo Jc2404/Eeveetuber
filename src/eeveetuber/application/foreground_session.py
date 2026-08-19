@@ -11,6 +11,8 @@ from eeveetuber.application.context_service import CharacterContextService
 from eeveetuber.application.conversation_history import RecentConversationHistoryPolicy
 from eeveetuber.application.conversation_storage import ConversationStorageCoordinator
 from eeveetuber.application.event_recorder import AsyncEventRecorder
+from eeveetuber.application.foreground_voice import ForegroundVoiceMixin
+from eeveetuber.application.voice_input import VoiceInputPolicy
 from eeveetuber.dialogue.pipeline import DialogueCancelled, DialoguePipeline
 from eeveetuber.dialogue.ports import AsyncCloseable, ModelProvider, SpeechSynthesizer
 from eeveetuber.dialogue.types import (
@@ -42,7 +44,7 @@ from eeveetuber.storage.ids import new_message_id
 _LOGGER = get_logger(component="foreground_session")
 
 
-class ForegroundSession:
+class ForegroundSession(ForegroundVoiceMixin):
     """Application-level session façade used by transport adapters."""
 
     def __init__(
@@ -57,6 +59,7 @@ class ForegroundSession:
         outbox_capacity: int = 256,
         event_recorder_capacity: int = 8_192,
         history_policy: RecentConversationHistoryPolicy | None = None,
+        voice_policy: VoiceInputPolicy | None = None,
     ) -> None:
         self._supervisor = supervisor
         self._context_service = context_service
@@ -76,6 +79,8 @@ class ForegroundSession:
         )
         self._actor: SessionActor | None = None
         self._message_sequence = 0
+        self._voice_policy = voice_policy
+        self._voice_capture_active = False
 
     @property
     def actor(self) -> SessionActor:
@@ -111,7 +116,15 @@ class ForegroundSession:
             await actor.publish_result(
                 self._output_event(
                     "session.ready",
-                    {"generation": 0, "interaction_state": InteractionState.IDLE.value},
+                    {
+                        "generation": 0,
+                        "interaction_state": InteractionState.IDLE.value,
+                        "voice_input": (
+                            self._voice_policy.public_config()
+                            if self._voice_policy is not None
+                            else {"enabled": False}
+                        ),
+                    },
                 ),
                 actor.current_generation,
             )
@@ -248,6 +261,18 @@ class ForegroundSession:
                 await self._accept_turn(context, message)
             case "turn.cancel_requested":
                 await self._accept_cancel(context, message)
+            case "voice.capture_started":
+                await self._accept_voice_capture_started(context, message)
+            case "voice.capture_stopped":
+                await self._accept_voice_capture_stopped(context, message)
+            case "voice.speech_started":
+                await self._accept_voice_speech_started(context, message)
+            case "voice.transcript_partial":
+                await self._publish_voice_trace(context, message)
+            case "voice.transcript_empty":
+                await self._publish_voice_trace(context, message)
+            case "voice.recognition_failed":
+                await self._accept_voice_recognition_failed(context, message)
             case "transport.ping":
                 await context.publish(
                     self._output_event(
@@ -291,14 +316,28 @@ class ForegroundSession:
         context: SessionActorContext,
         message: SessionMessage,
     ) -> None:
-        self._enter_processing(context)
-        raw_text = message.event.payload.get("text")
-        raw_turn_id = message.event.payload.get("turn_id")
+        primitive_payload = self._primitive_payload(message.event)
+        raw_text = primitive_payload.get("text")
+        raw_turn_id = primitive_payload.get("turn_id")
+        raw_input_modality = primitive_payload.get("input_modality", "text")
         if not isinstance(raw_text, str) or not isinstance(raw_turn_id, str):
             raise TypeError("turn.requested payload is invalid")
+        if raw_input_modality not in {"text", "voice"}:
+            raise TypeError("turn.requested input modality is invalid")
+        input_modality = str(raw_input_modality)
+        self._enter_processing(context)
         turn_id = UUID(raw_turn_id)
+        raw_utterance_id = primitive_payload.get("utterance_id")
+        utterance_id = raw_utterance_id if isinstance(raw_utterance_id, str) else None
         user_sequence = self._next_message_sequence()
         assistant_sequence = self._next_message_sequence()
+        message_metadata: dict[str, JsonValue] = {
+            "turn_id": str(turn_id),
+            "generation": context.generation.value,
+            "input_modality": input_modality,
+        }
+        if utterance_id is not None:
+            message_metadata["utterance_id"] = utterance_id
         self._conversation_storage.persist_message(
             context,
             MessageRecord(
@@ -310,10 +349,27 @@ class ForegroundSession:
                 created_at=message.event.occurred_at,
                 actor_id=message.event.actor_id,
                 source_event_id=str(message.event.event_id),
-                metadata={"turn_id": str(turn_id), "generation": context.generation.value},
+                metadata=message_metadata,
             ),
             name=f"persist-user:{turn_id}",
         )
+        if input_modality == "voice":
+            await context.publish(
+                self._output_event(
+                    "voice.transcript_final",
+                    {
+                        "turn_id": str(turn_id),
+                        "generation": context.generation.value,
+                        "utterance_id": utterance_id,
+                        "text": raw_text,
+                        "language": primitive_payload.get("language"),
+                        "confidence": primitive_payload.get("confidence"),
+                    },
+                    cause=message.event,
+                    priority=EventPriority.HIGH,
+                    retention=RetentionClass.TRANSCRIPT,
+                )
+            )
         await context.publish(
             self._output_event(
                 "turn.accepted",
@@ -321,6 +377,7 @@ class ForegroundSession:
                     "turn_id": str(turn_id),
                     "generation": context.generation.value,
                     "interaction_state": InteractionState.PROCESSING.value,
+                    "input_modality": input_modality,
                 },
                 cause=message.event,
             )
@@ -335,33 +392,6 @@ class ForegroundSession:
                 assistant_sequence,
             ),
             name=f"dialogue:{turn_id}",
-        )
-
-    async def _accept_cancel(
-        self,
-        context: SessionActorContext,
-        message: SessionMessage,
-    ) -> None:
-        state = context.interaction_state
-        if state is InteractionState.DEGRADED:
-            context.transition_interaction(InteractionState.IDLE, reason="cancel degraded state")
-        elif state is not InteractionState.IDLE:
-            if state is not InteractionState.INTERRUPTING:
-                context.transition_interaction(
-                    InteractionState.INTERRUPTING,
-                    reason="foreground cancellation accepted",
-                )
-            context.transition_interaction(InteractionState.IDLE, reason="foreground cancelled")
-        await context.publish(
-            self._output_event(
-                "speech.cancelled",
-                {
-                    "generation": context.generation.value,
-                    "interaction_state": InteractionState.IDLE.value,
-                },
-                cause=message.event,
-                priority=EventPriority.CRITICAL,
-            )
         )
 
     async def _run_turn(
@@ -549,10 +579,7 @@ class ForegroundSession:
                         output_tokens=output.plan.output_tokens,
                         segment_count=len(output.plan.segments),
                     )
-            await context.transition_interaction_if_current(
-                InteractionState.IDLE,
-                reason="utterance stream completed",
-            )
+            await self._finish_interaction_after_turn(context)
         except DialogueCancelled:
             return
         except asyncio.CancelledError:

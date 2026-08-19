@@ -62,6 +62,44 @@ async def test_recorder_persists_ordered_envelopes_and_redacts_audio() -> None:
 
 
 @pytest.mark.asyncio
+async def test_partial_voice_transcripts_never_enter_the_event_journal() -> None:
+    sink = RecordingSink()
+    recorder = AsyncEventRecorder(sink)
+    recorder.start()
+    recorder.observe(
+        EventEnvelope.create(
+            "voice.transcript_partial",
+            {"text": "abandoned private hypothesis", "revision": 0},
+            sequence=1,
+            retention=RetentionClass.EPHEMERAL_MEDIA,
+        )
+    )
+    recorder.observe(
+        EventEnvelope.create(
+            "voice.transcript_partial",
+            {"text": "mislabelled private hypothesis", "revision": 1},
+            sequence=2,
+            retention=RetentionClass.OPERATIONAL_TRACE,
+        )
+    )
+    recorder.observe(
+        EventEnvelope.create(
+            "voice.transcript_final",
+            {"text": "keep this final transcript"},
+            sequence=3,
+            retention=RetentionClass.TRANSCRIPT,
+        )
+    )
+
+    stats = await recorder.close()
+
+    assert stats.persisted == 1
+    assert stats.dropped == 0
+    assert [record.event_type for record in sink.records] == ["voice.transcript_final"]
+    assert sink.records[0].payload["payload"] == {"text": "keep this final transcript"}
+
+
+@pytest.mark.asyncio
 async def test_transcript_event_displaces_operational_trace_when_queue_is_full() -> None:
     sink = RecordingSink()
     recorder = AsyncEventRecorder(sink, capacity=2)
