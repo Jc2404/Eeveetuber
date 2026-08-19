@@ -18,6 +18,7 @@ from eeveetuber.dialogue.types import (
     UtterancePlan,
     UtteranceSegment,
 )
+from eeveetuber.runtime.cancellation import CancellationToken
 
 
 class DialogueCancelled(Exception):
@@ -48,15 +49,26 @@ class DialoguePipeline:
         self._is_generation_current = is_generation_current
         self._max_segment_chars = max_segment_chars
 
-    async def run(self, request: DialogueRequest) -> AsyncIterator[DialogueStreamEvent]:
+    async def run(
+        self,
+        request: DialogueRequest,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> AsyncIterator[DialogueStreamEvent]:
         assembler = IncrementalUtteranceAssembler(max_segment_chars=self._max_segment_chars)
         completion: ModelCompleted | None = None
 
-        async for model_event in self._model.stream(request):
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        async for model_event in self._model.stream(request, cancellation=cancellation):
             self._check_generation(request.generation)
             if isinstance(model_event, ModelTextDelta):
                 for segment in assembler.push(model_event.text):
-                    async for event in self._emit_segment(request, segment):
+                    async for event in self._emit_segment(
+                        request,
+                        segment,
+                        cancellation=cancellation,
+                    ):
                         yield event
             elif isinstance(model_event, ModelCompleted):
                 if completion is not None:
@@ -66,7 +78,11 @@ class DialoguePipeline:
                 raise DialogueProtocolError(f"unsupported model event: {type(model_event)!r}")
 
         for segment in assembler.finish():
-            async for event in self._emit_segment(request, segment):
+            async for event in self._emit_segment(
+                request,
+                segment,
+                cancellation=cancellation,
+            ):
                 yield event
 
         self._check_generation(request.generation)
@@ -84,7 +100,11 @@ class DialoguePipeline:
         )
 
     async def _emit_segment(
-        self, request: DialogueRequest, segment: UtteranceSegment
+        self,
+        request: DialogueRequest,
+        segment: UtteranceSegment,
+        *,
+        cancellation: CancellationToken | None,
     ) -> AsyncIterator[DialogueStreamEvent]:
         self._check_generation(request.generation)
         yield SegmentReady(
@@ -92,7 +112,7 @@ class DialoguePipeline:
             generation=request.generation,
             segment=segment,
         )
-        async for chunk in self._speech.synthesize(segment):
+        async for chunk in self._speech.synthesize(segment, cancellation=cancellation):
             self._check_generation(request.generation)
             yield SegmentAudioReady(
                 turn_id=request.turn_id,
@@ -104,4 +124,3 @@ class DialoguePipeline:
     def _check_generation(self, generation: int) -> None:
         if not self._is_generation_current(generation):
             raise DialogueCancelled(f"dialogue generation {generation} is no longer current")
-

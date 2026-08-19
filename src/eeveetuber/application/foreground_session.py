@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from eeveetuber.application.context_service import CharacterContextService
 from eeveetuber.dialogue.pipeline import DialogueCancelled, DialoguePipeline
-from eeveetuber.dialogue.ports import ModelProvider, SpeechSynthesizer
+from eeveetuber.dialogue.ports import AsyncCloseable, ModelProvider, SpeechSynthesizer
 from eeveetuber.dialogue.types import (
     DialogueRequest,
     SegmentAudioReady,
@@ -147,12 +147,55 @@ class ForegroundSession:
             )
         )
 
+    async def acknowledge_playback(
+        self,
+        *,
+        causation_id: UUID,
+        audio_event_id: UUID,
+        generation: int,
+        event_sequence: int,
+        segment_id: UUID,
+        chunk_index: int,
+        state: str,
+        client_monotonic_ms: int,
+        played_ms: int | None,
+        detail: str | None,
+    ) -> SessionSubmission:
+        return await self.actor.submit(
+            EventEnvelope.create(
+                "playback.ack_received",
+                {
+                    "audio_event_id": str(audio_event_id),
+                    "generation": generation,
+                    "event_sequence": event_sequence,
+                    "segment_id": str(segment_id),
+                    "chunk_index": chunk_index,
+                    "state": state,
+                    "client_monotonic_ms": client_monotonic_ms,
+                    "played_ms": played_ms,
+                    "detail": detail,
+                },
+                session_id=self.session_id,
+                actor_id="operator",
+                causation_id=causation_id,
+                trust=TrustLabel.OWNER,
+                visibility=Visibility.PRIVATE,
+                retention=RetentionClass.OPERATIONAL_TRACE,
+                priority=EventPriority.LOW,
+            )
+        )
+
     async def receive_output(self) -> EventEnvelope:
         return await self.actor.receive_output()
 
     async def stop(self) -> None:
         if self._actor is not None:
             await self._supervisor.stop_session(self._actor.session_id, graceful=False)
+        closed: set[int] = set()
+        for adapter in (self._model, self._speech):
+            if isinstance(adapter, AsyncCloseable) and id(adapter) not in closed:
+                await adapter.aclose()
+                closed.add(id(adapter))
 
     async def _handle_message(
         self,
@@ -179,6 +222,24 @@ class ForegroundSession:
                         {"generation": context.generation.value},
                         cause=message.event,
                         priority=EventPriority.CRITICAL,
+                    )
+                )
+            case "playback.ack_received":
+                acknowledged_generation = message.event.payload.get("generation")
+                primitive_payload = message.event.to_dict()["payload"]
+                if not isinstance(primitive_payload, dict):  # defensive event invariant
+                    raise TypeError("playback acknowledgement payload must be an object")
+                await context.publish(
+                    self._output_event(
+                        "playback.acknowledged",
+                        {
+                            **primitive_payload,
+                            "accepted": acknowledged_generation == context.generation.value,
+                            "current_generation": context.generation.value,
+                        },
+                        cause=message.event,
+                        priority=EventPriority.LOW,
+                        retention=RetentionClass.OPERATIONAL_TRACE,
                     )
                 )
             case _:  # pragma: no cover - actor receives only application-created commands
@@ -296,7 +357,8 @@ class ForegroundSession:
                     context.generation.value,
                     user_text,
                     snapshot.rendered_context,
-                )
+                ),
+                cancellation=message.token,
             ):
                 if isinstance(output, SegmentReady):
                     if first_segment:
@@ -462,4 +524,3 @@ class ForegroundSession:
             priority=priority,
             retention=retention,
         )
-

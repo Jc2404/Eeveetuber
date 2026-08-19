@@ -5,6 +5,8 @@ __pycache__/
 .hypothesis/
 .mypy_cache/
 .pytest_cache/
+.pytest-tmp/
+.test-artifacts/
 .ruff_cache/
 .venv/
 build/
@@ -15,4 +17,3 @@ htmlcov/
 *.db-wal
 .env
 data/
-

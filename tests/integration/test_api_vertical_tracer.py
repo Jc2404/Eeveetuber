@@ -1,9 +1,12 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from eeveetuber.adapters.fake import FakeModelProvider
 from eeveetuber.api.app import create_app
+from eeveetuber.api.audio_frames import decode_audio_frame
+from eeveetuber.api.protocol import WEBSOCKET_SUBPROTOCOL_BINARY_AUDIO
 from eeveetuber.config import AppSettings
 
 
@@ -23,6 +26,12 @@ def test_health_and_incremental_websocket_turn(tmp_path: Path) -> None:
         health = client.get("/healthz")
         assert health.status_code == 200
         assert health.json()["status"] == "healthy"
+        assert health.json()["adapters"] == {"model": "fake", "speech": "fake"}
+
+        root = client.get("/", follow_redirects=False)
+        assert root.status_code in {302, 307}
+        assert root.headers["location"] == "/operator/"
+        assert client.get("/operator/").status_code == 200
 
         with client.websocket_connect("/v1/ws") as websocket:
             ready = websocket.receive_json()
@@ -40,6 +49,51 @@ def test_health_and_incremental_websocket_turn(tmp_path: Path) -> None:
     assert event_types.index("utterance.segment_ready") < event_types.index("speech.audio_chunk")
     assert event_types[-1] == "utterance.completed"
     assert len({message["generation"] for message in received}) == 1
+
+
+def test_binary_audio_subprotocol_and_playback_acknowledgement(tmp_path: Path) -> None:
+    app = create_app(AppSettings(data_dir=tmp_path))
+
+    with TestClient(app) as client, client.websocket_connect(
+        "/v1/ws",
+        subprotocols=[WEBSOCKET_SUBPROTOCOL_BINARY_AUDIO],
+    ) as websocket:
+        assert websocket.accepted_subprotocol == WEBSOCKET_SUBPROTOCOL_BINARY_AUDIO
+        assert websocket.receive_json()["type"] == "session.ready"
+        assert websocket.receive_json()["type"] == "session.status"
+        websocket.send_json({"protocol_version": 1, "type": "turn.text", "text": "binary"})
+
+        audio_frame = None
+        event_types: list[str] = []
+        while "playback.acknowledged" not in event_types:
+            raw = websocket.receive()
+            binary = raw.get("bytes")
+            if isinstance(binary, bytes):
+                audio_frame = decode_audio_frame(binary)
+                websocket.send_json(
+                    {
+                        "protocol_version": 1,
+                        "type": "playback.ack",
+                        "session_id": str(audio_frame.session_id),
+                        "audio_event_id": str(audio_frame.event_id),
+                        "generation": audio_frame.generation,
+                        "event_sequence": audio_frame.event_sequence,
+                        "segment_id": str(audio_frame.segment_id),
+                        "chunk_index": audio_frame.chunk_index,
+                        "state": "completed",
+                        "client_monotonic_ms": 100,
+                        "played_ms": audio_frame.duration_ms,
+                    }
+                )
+                continue
+            text = raw.get("text")
+            assert isinstance(text, str)
+            event_types.append(str(json.loads(text)["type"]))
+
+    assert audio_frame is not None
+    assert audio_frame.audio.startswith(b"FAKE_AUDIO:")
+    assert "speech.audio_chunk" not in event_types
+    assert "utterance.completed" in event_types
 
 
 def test_replacement_turn_rejects_late_first_turn_output(tmp_path: Path) -> None:

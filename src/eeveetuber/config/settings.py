@@ -9,6 +9,8 @@ from platformdirs import user_data_path
 from pydantic import BaseModel, Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from eeveetuber.config.providers import ModelAdapterSettings, SpeechAdapterSettings
+
 
 class ContextBudgetSettings(BaseModel):
     """Hard heuristic-token budgets used by the P0 context compiler."""
@@ -41,6 +43,8 @@ class AppSettings(BaseSettings):
     session_mailbox_capacity: int = Field(default=128, ge=8, le=65_536)
     websocket_send_capacity: int = Field(default=256, ge=8, le=65_536)
     context: ContextBudgetSettings = Field(default_factory=ContextBudgetSettings)
+    model: ModelAdapterSettings = Field(default_factory=ModelAdapterSettings)
+    speech: SpeechAdapterSettings = Field(default_factory=SpeechAdapterSettings)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -11,6 +11,7 @@ from eeveetuber.dialogue.types import (
     ModelStreamEvent,
     ModelTextDelta,
 )
+from eeveetuber.runtime.cancellation import CancellationToken
 
 
 class FakeModelProvider:
@@ -28,12 +29,20 @@ class FakeModelProvider:
         self._delay_seconds = delay_seconds
         self.requests: list[DialogueRequest] = []
 
-    async def stream(self, request: DialogueRequest) -> AsyncIterator[ModelStreamEvent]:
+    async def stream(
+        self,
+        request: DialogueRequest,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> AsyncIterator[ModelStreamEvent]:
         self.requests.append(request)
         response = self._response(request) if callable(self._response) else self._response
         for offset in range(0, len(response), self._chunk_chars):
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
             if self._delay_seconds:
                 await asyncio.sleep(self._delay_seconds)
+                if cancellation is not None:
+                    cancellation.raise_if_cancelled()
             yield ModelTextDelta(response[offset : offset + self._chunk_chars])
         yield ModelCompleted(output_tokens=max(1, len(response) // 4))
-

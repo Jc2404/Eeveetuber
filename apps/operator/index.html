@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self' ws: wss:; script-src 'self'; style-src 'self'; media-src 'self' blob:"
+    />
+    <title>Eeveetuber Operator</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="eyebrow">Eeveetuber</p>
+          <h1>Operator console</h1>
+        </div>
+        <output id="status" class="status disconnected" aria-live="polite">Disconnected</output>
+      </header>
+
+      <section class="connection panel" aria-labelledby="connection-title">
+        <h2 id="connection-title">Connection</h2>
+        <label for="endpoint">WebSocket endpoint</label>
+        <div class="row">
+          <input id="endpoint" inputmode="url" autocomplete="url" />
+          <button id="connect" type="button">Connect</button>
+        </div>
+      </section>
+
+      <section class="controls panel" aria-labelledby="controls-title">
+        <h2 id="controls-title">Live controls</h2>
+        <div class="control-grid">
+          <button data-action="stop_speech" class="warning" type="button">Stop speech</button>
+          <button data-action="neutral_avatar" type="button">Neutral avatar</button>
+          <button data-action="kill_session" class="danger" type="button">Kill session</button>
+          <button id="audio-toggle" aria-pressed="true" type="button">Audio enabled</button>
+        </div>
+      </section>
+
+      <section class="conversation panel" aria-labelledby="conversation-title">
+        <div class="section-heading">
+          <h2 id="conversation-title">Conversation</h2>
+          <button id="clear-history" class="quiet" type="button">Clear view</button>
+        </div>
+        <ol id="history" class="history" aria-live="polite"></ol>
+        <form id="turn-form">
+          <label for="turn-text">Say something</label>
+          <div class="row">
+            <textarea id="turn-text" rows="2" maxlength="32000" required></textarea>
+            <button type="submit">Send</button>
+          </div>
+        </form>
+      </section>
+
+      <details class="events panel">
+        <summary>Protocol events</summary>
+        <ol id="event-log" class="event-log"></ol>
+      </details>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

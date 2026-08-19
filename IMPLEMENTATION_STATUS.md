@@ -1,7 +1,7 @@
 # Eeveetuber implementation status
 
-**Updated:** 2026-08-19  
-**Current milestone:** Phase 0 backbone plus deterministic fake Phase 1 vertical tracer
+**Updated:** 2026-08-20
+**Current milestone:** Phase 1 operator, binary-audio transport, and real provider-adapter slice
 
 ## Implemented
 
@@ -29,6 +29,23 @@
   leases, resources, cooldowns, rate limits, audio markers, cancellation generations, and neutral
   recovery.
 - FastAPI health endpoint and versioned `/v1/ws` text-turn/cancel/operator/ping protocol.
+- Dependency-free operator console mounted at `/`, with text/history/event views and
+  stop-speech, mute, neutral-avatar, and kill-session controls.
+- Negotiated `eeveetuber.v1.binary-audio` WebSocket subprotocol and strictly validated EVAF v1
+  frames carrying correlation, generation, sequence, media, and audio metadata. Legacy clients
+  retain JSON/base64 audio.
+- Ordered browser segment buffering and playback acknowledgements for every constituent audio
+  chunk; stale-generation acknowledgements are rejected by the session actor.
+- OpenAI-compatible Chat Completions SSE adapter with hosted/keyless-local configuration,
+  cancellation-aware reads, bounded parsing/errors, normalized finish reasons and usage, and
+  guaranteed response cleanup.
+- OpenAI-compatible `/audio/speech` streaming adapter with hosted/keyless-local configuration,
+  bounded ordered chunks, cancellation, timeout/byte limits, deterministic media metadata, and
+  guaranteed response cleanup.
+- Environment-backed provider selection with fake adapters as the network-free default, plus
+  Ollama and generic OpenAI-compatible example profiles.
+- Session shutdown closes adapter-owned HTTP clients; foreground replacement actively propagates
+  its cancellation token into model and speech waits.
 - End-to-end fake turn proving context pin → model stream → early segment → fake audio → final plan.
 - Barge-in/replacement test proving generation-1 text/audio cannot leak after generation 2 starts.
 - Two simultaneous WebSocket sessions with sentinel-data noninterference.
@@ -36,12 +53,13 @@
 
 ## Verification baseline
 
-- `275 passed`
+- `367 passed`
 - Ruff: clean
-- strict mypy: clean across 56 source files
-- branch-aware coverage: `86.10%` (required floor: 80%)
+- strict mypy: clean across 62 source files
+- branch-aware coverage: `85.96%` (required floor: 80%)
 - Alembic upgrade from an empty SQLite database: passed
 - locked dependency synchronization: passed
+- wheel build: passed; packaged wheel contains the operator assets
 
 The current FastAPI TestClient emits one upstream deprecation warning about Starlette's legacy
 `httpx` test transport. It does not affect runtime behavior; replace the test transport when the
@@ -49,8 +67,9 @@ FastAPI/Starlette ecosystem completes that migration.
 
 ## Intentionally not yet implemented
 
-- Production VAD/ASR, model, streaming TTS, audio playback, or Live2D adapters.
-- Browser/operator UI and binary WebSocket audio framing.
+- Production VAD/ASR, microphone input, selected-image input, or Live2D adapters.
+- Live provider credential tests. Model and TTS adapters are contract-tested with deterministic
+  HTTP transports, but require the owner's endpoint/model/key configuration for real use.
 - ModeCoordinator, automatic conversation/work/game/performance switching, and reasoning routing.
 - Background memory candidate extraction/consolidation. The schema and deterministic promotion
   gate exist, but no reflection model is allowed yet.
@@ -60,17 +79,14 @@ FastAPI/Starlette ecosystem completes that migration.
 
 ## Next implementation order
 
-1. Freeze the binary audio and status portions of WebSocket protocol v1 and add a minimal operator
-   client that renders the existing fake trace.
-2. Add one OpenAI-compatible model adapter with normalized stream/cancellation/capability contract
-   tests, plus one local adapter profile.
-3. Add one streaming TTS adapter and deterministic audio framing/playback acknowledgements.
-4. Add per-session VAD and streaming/final ASR ports, then prove measured barge-in timing.
-5. Add a Live2D renderer adapter behind the existing semantic performance contracts. If code is
+1. Add per-session microphone framing, VAD and streaming/final ASR ports, then prove measured
+   barge-in timing.
+2. Add a Live2D renderer adapter behind the existing semantic performance contracts. If code is
    adapted from Open-LLM-VTuber, add the required file header and third-party notice with its pinned
    path and revision.
-6. Add the browser/operator controls for mute, stop speech, neutral avatar, and kill session.
-7. Only after the realtime vertical slice is measured, implement ModeCoordinator and Phase 2
+3. Connect playback timing to the performance scheduler and expose real adapter health/latency.
+4. Add selected-image input, failure degradation tests, and a bounded soak runner.
+5. Only after the realtime vertical slice is measured, implement ModeCoordinator and Phase 2
    local-memory retrieval/consolidation.
 
 ## Borrowing status

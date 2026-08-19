@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 
 from eeveetuber.dialogue.types import AudioChunk, UtteranceSegment
+from eeveetuber.runtime.cancellation import CancellationToken
 
 
 class FakeSpeechSynthesizer:
@@ -15,10 +16,19 @@ class FakeSpeechSynthesizer:
         self._delay_seconds = delay_seconds
         self.segments: list[UtteranceSegment] = []
 
-    async def synthesize(self, segment: UtteranceSegment) -> AsyncIterator[AudioChunk]:
+    async def synthesize(
+        self,
+        segment: UtteranceSegment,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> AsyncIterator[AudioChunk]:
         self.segments.append(segment)
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
         payload = f"FAKE_AUDIO:{segment.speakable_text}".encode()
         yield AudioChunk(
             segment_id=segment.segment_id,
@@ -30,4 +40,3 @@ class FakeSpeechSynthesizer:
             is_final=True,
             duration_ms=max(80, len(segment.speakable_text) * 35),
         )
-
