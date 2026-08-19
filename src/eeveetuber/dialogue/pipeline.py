@@ -92,6 +92,8 @@ class DialoguePipeline:
             generation=request.generation,
             segments=assembler.segments,
             stop_reason=completion.stop_reason,
+            input_tokens=completion.input_tokens,
+            output_tokens=completion.output_tokens,
         )
         yield UtteranceCompleted(
             turn_id=request.turn_id,

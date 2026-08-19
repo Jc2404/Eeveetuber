@@ -51,3 +51,19 @@ async def test_factory_maps_openai_compatible_settings_without_network_io() -> N
     assert speech.config.response_format is SpeechAudioFormat.PCM
     await model.aclose()
     await speech.aclose()
+
+
+@pytest.mark.asyncio
+async def test_factory_preserves_explicit_reasoning_none() -> None:
+    model = create_model_provider(
+        ModelAdapterSettings(
+            provider=AdapterProvider.OPENAI_COMPATIBLE,
+            base_url="http://127.0.0.1:11434/v1",
+            model="local-model",
+            reasoning_effort=ReasoningEffortSetting.NONE,
+        )
+    )
+
+    assert isinstance(model, OpenAICompatibleModelProvider)
+    assert model.config.reasoning_effort is ReasoningEffort.NONE
+    await model.aclose()

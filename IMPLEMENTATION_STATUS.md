@@ -1,7 +1,7 @@
 # Eeveetuber implementation status
 
 **Updated:** 2026-08-20
-**Current milestone:** Phase 1 operator, binary-audio transport, and real provider-adapter slice
+**Current milestone:** Phase 1 conversation reliability, observability, and provider slice
 
 ## Implemented
 
@@ -20,6 +20,8 @@
 - SQLite WAL storage for sessions, messages, events, checkpoints, outbox items, memory, context
   snapshots, FTS5 indexes, and stable-ID “needle then expand” transcript recall.
 - Alembic initial migration and environment-selectable database URL.
+- Accepted input/output events are journaled sequentially through a bounded off-path recorder;
+  ephemeral audio bytes are redacted while identity, ordering, media, and playback metadata remain.
 - Provider-neutral streaming model and speech ports.
 - Incremental utterance assembly: validated sentence segments reach TTS before the complete model
   response and are collected into a final replayable plan.
@@ -44,6 +46,15 @@
   guaranteed response cleanup.
 - Environment-backed provider selection with fake adapters as the network-free default, plus
   Ollama and generic OpenAI-compatible example profiles.
+- Explicit `reasoning_effort=none` support for low-latency Ollama/Qwen conversation. Python/config
+  `None` still means "omit the field," while the enum value sends the literal string `none`.
+- Bounded recent user/assistant history for the current session, loaded from SQLite under a 50 ms
+  local deadline and rendered as data-only, non-authoritative context. Timed-out SQLite workers are
+  tracked and drained before shutdown.
+- Zero-visible-output completions become a readable, recoverable `turn.failed` event containing
+  normalized stop reason and token counts; blank assistant messages are never persisted.
+- Opt-in `--verbose` rotating text logs with UTC timestamps, process sequence numbers, event/session
+  correlation fields, and recursive secret/conversation/reasoning redaction.
 - Session shutdown closes adapter-owned HTTP clients; foreground replacement actively propagates
   its cancellation token into model and speech waits.
 - End-to-end fake turn proving context pin → model stream → early segment → fake audio → final plan.
@@ -53,10 +64,10 @@
 
 ## Verification baseline
 
-- `367 passed`
+- `415 passed`
 - Ruff: clean
-- strict mypy: clean across 62 source files
-- branch-aware coverage: `85.96%` (required floor: 80%)
+- strict mypy: clean across 65 source files
+- branch-aware coverage: `86.42%` (required floor: 80%)
 - Alembic upgrade from an empty SQLite database: passed
 - locked dependency synchronization: passed
 - wheel build: passed; packaged wheel contains the operator assets
@@ -68,11 +79,13 @@ FastAPI/Starlette ecosystem completes that migration.
 ## Intentionally not yet implemented
 
 - Production VAD/ASR, microphone input, selected-image input, or Live2D adapters.
-- Live provider credential tests. Model and TTS adapters are contract-tested with deterministic
-  HTTP transports, but require the owner's endpoint/model/key configuration for real use.
+- Automated live-provider tests. Model and TTS adapters are contract-tested with deterministic
+  HTTP transports; a manual local Qwen3.5/Ollama smoke test passed with reasoning disabled.
 - ModeCoordinator, automatic conversation/work/game/performance switching, and reasoning routing.
 - Background memory candidate extraction/consolidation. The schema and deterministic promotion
   gate exist, but no reflection model is allowed yet.
+- Cross-session conversation resume and learned long-term memory injection. Current bounded history
+  gives continuity only within the connected session; durable transcripts remain available.
 - Skills, SkillLearner, MCP, general tools, approvals, durable work graphs, LangGraph, or RAG.
 - Public chat, moderation, game telemetry, OBS, and stream-safe presentation profiles.
 - Remote authentication/TLS. The server remains localhost-first.

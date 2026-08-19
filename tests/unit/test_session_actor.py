@@ -56,6 +56,30 @@ async def test_actor_serializes_inputs_stamps_events_and_publishes_results() -> 
 
 
 @pytest.mark.asyncio
+async def test_actor_observes_only_accepted_stamped_events_in_sequence() -> None:
+    observed: list[EventEnvelope] = []
+
+    async def handler(context: SessionActorContext, message: SessionMessage) -> None:
+        await context.publish(
+            EventEnvelope.create(
+                "test.output",
+                causation_id=message.event.event_id,
+                correlation_id=message.event.correlation_id,
+            )
+        )
+
+    actor = SessionActor(handler, event_observer=observed.append)
+    await actor.start()
+    await actor.submit(EventEnvelope.create("test.input"))
+    await actor.receive_output()
+    await actor.stop()
+
+    assert [event.type for event in observed] == ["test.input", "test.output"]
+    assert [event.sequence for event in observed] == [0, 1]
+    assert all(event.session_id == actor.session_id for event in observed)
+
+
+@pytest.mark.asyncio
 async def test_replacement_turn_rejects_late_child_result() -> None:
     first_started = asyncio.Event()
     release_late_result = asyncio.Event()

@@ -106,6 +106,47 @@ def test_fts_search_then_stable_id_window_expansion(store: SqliteStore) -> None:
     assert window.has_after is True
 
 
+def test_recent_messages_use_sequence_cursor_limit_and_chronological_output(
+    store: SqliteStore,
+) -> None:
+    store.sessions.create(
+        SessionRecord(session_id="session-recent", namespace="eevee", created_at=NOW)
+    )
+    for sequence in range(1, 7):
+        store.messages.append(
+            MessageRecord(
+                message_id=f"recent-{sequence}",
+                session_id="session-recent",
+                sequence=sequence,
+                role=MessageRole.USER,
+                content=f"turn {sequence}",
+                created_at=NOW,
+                metadata={"generation": sequence},
+            )
+        )
+
+    recent = store.messages.list_recent_before(
+        "session-recent",
+        before_sequence=6,
+        limit=3,
+    )
+
+    assert [record.sequence for record in recent] == [3, 4, 5]
+    assert all(record.sequence < 6 for record in recent)
+
+
+def test_blank_assistant_message_is_invalid_before_persistence() -> None:
+    with pytest.raises(ValueError, match="assistant message content cannot be blank"):
+        MessageRecord(
+            message_id="blank-assistant",
+            session_id="session-1",
+            sequence=1,
+            role=MessageRole.ASSISTANT,
+            content="  \n ",
+            created_at=NOW,
+        )
+
+
 def test_context_snapshot_round_trip_preserves_revision_pin(store: SqliteStore) -> None:
     snapshot = ContextCompiler(id_factory=lambda: "snapshot-1", clock=lambda: NOW).compile(
         ContextCompileRequest(
@@ -126,4 +167,3 @@ def test_context_snapshot_round_trip_preserves_revision_pin(store: SqliteStore) 
     assert restored is not None
     assert restored.revision.memory_generation == 17
     assert store.context_snapshots.latest_for_namespace("eevee") == snapshot
-

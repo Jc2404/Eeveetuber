@@ -163,6 +163,7 @@ def create_app(
             resources.speech_factory(),
             inbox_capacity=resources.settings.session_mailbox_capacity,
             outbox_capacity=resources.settings.websocket_send_capacity,
+            event_recorder_capacity=resources.settings.event_recorder_capacity,
         )
         await session.start()
         sender = asyncio.create_task(

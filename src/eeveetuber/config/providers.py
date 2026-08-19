@@ -15,6 +15,7 @@ class AdapterProvider(StrEnum):
 
 
 class ReasoningEffortSetting(StrEnum):
+    NONE = "none"
     MINIMAL = "minimal"
     LOW = "low"
     MEDIUM = "medium"

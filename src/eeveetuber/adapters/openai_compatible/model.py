@@ -33,6 +33,7 @@ from eeveetuber.runtime.cancellation import CancellationToken
 class ReasoningEffort(StrEnum):
     """Portable values accepted by reasoning-capable Chat Completions models."""
 
+    NONE = "none"
     MINIMAL = "minimal"
     LOW = "low"
     MEDIUM = "medium"

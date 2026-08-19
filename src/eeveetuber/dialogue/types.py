@@ -41,9 +41,19 @@ class ModelTextDelta:
 
 @dataclass(frozen=True, slots=True)
 class ModelCompleted:
+    """Normalized model termination and provider-reported token usage."""
+
     stop_reason: ModelStopReason = ModelStopReason.COMPLETE
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("input_tokens", self.input_tokens),
+            ("output_tokens", self.output_tokens),
+        ):
+            if value is not None and (isinstance(value, bool) or value < 0):
+                raise ValueError(f"{field_name} must be a non-negative integer")
 
 
 type ModelStreamEvent = ModelTextDelta | ModelCompleted
@@ -74,6 +84,16 @@ class UtterancePlan:
     generation: int
     segments: tuple[UtteranceSegment, ...]
     stop_reason: ModelStopReason
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("input_tokens", self.input_tokens),
+            ("output_tokens", self.output_tokens),
+        ):
+            if value is not None and (isinstance(value, bool) or value < 0):
+                raise ValueError(f"{field_name} must be a non-negative integer")
 
     @property
     def speakable_text(self) -> str:

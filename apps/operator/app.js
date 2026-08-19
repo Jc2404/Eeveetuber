@@ -143,7 +143,11 @@ function handleMessage(raw) {
     setStatus("connected", "Speaking");
     appendHistory("character", message.data?.display_text || message.data?.speakable_text || "");
   } else if (message.type === "utterance.completed") setStatus("connected", "Ready");
-  else if (message.type === "turn.failed") setStatus("error", message.data?.detail || "Turn failed");
+  else if (message.type === "turn.failed") {
+    const detail = message.data?.detail || "Turn failed";
+    setStatus("error", detail);
+    appendHistory("system", detail);
+  }
 
   if (message.type === "speech.audio_chunk" && message.data?.audio_base64) {
     acceptAudioFrame(audioFromJson(message));
@@ -345,7 +349,7 @@ function appendHistory(role, text) {
   item.className = role;
   const label = document.createElement("span");
   label.className = "role";
-  label.textContent = role === "owner" ? "You" : "Eeveetuber";
+  label.textContent = role === "owner" ? "You" : role === "system" ? "Runtime" : "Eeveetuber";
   item.append(label, document.createTextNode(text));
   ui.history.append(item);
   trimList(ui.history, 200);

@@ -17,6 +17,7 @@ from eeveetuber.runtime.mailbox import (
 from eeveetuber.runtime.session import (
     SessionActor,
     SessionActorContext,
+    SessionEventObserver,
     SessionLifecycle,
     SessionMessage,
     SessionSubmission,
@@ -35,6 +36,7 @@ __all__ = [
     "PutResult",
     "SessionActor",
     "SessionActorContext",
+    "SessionEventObserver",
     "SessionLifecycle",
     "SessionMessage",
     "SessionSubmission",

@@ -8,6 +8,7 @@ from eeveetuber.dialogue.types import (
     DialogueRequest,
     DialogueStreamEvent,
     ModelCompleted,
+    ModelStopReason,
     ModelStreamEvent,
     ModelTextDelta,
     SegmentAudioReady,
@@ -25,6 +26,7 @@ __all__ = [
     "IncrementalUtteranceAssembler",
     "ModelCompleted",
     "ModelProvider",
+    "ModelStopReason",
     "ModelStreamEvent",
     "ModelTextDelta",
     "SegmentAudioReady",
@@ -34,4 +36,3 @@ __all__ = [
     "UtterancePlan",
     "UtteranceSegment",
 ]
-

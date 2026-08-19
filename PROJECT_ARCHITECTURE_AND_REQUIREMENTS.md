@@ -3,7 +3,7 @@
 **Status:** Working architecture baseline  
 **Prepared:** 2026-08-19  
 **Scope reviewed:** Open-LLM-VTuber 1.2.1 at commit `3afa410`, BearCode at commit `335b293`, Letta Code 0.30.25 at commit `ee230f3`, plus the linked Claude Code, LangChain/LangGraph, and RAG references  
-**Implementation:** Phase 0 and the Phase 1 operator/binary-audio/provider slice are implemented; see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Microphone/VAD/ASR, Live2D, selected-image input, latency instrumentation, and soak validation remain for the Phase 1 gate.
+**Implementation:** Phase 0 and the Phase 1 operator/binary-audio/provider/conversation-reliability slice are implemented; see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Microphone/VAD/ASR, Live2D, selected-image input, latency instrumentation, and soak validation remain for the Phase 1 gate.
 **Intended use:** This is the editable source of truth for product scope, architecture decisions, requirements, and implementation phases. Update it as decisions are made; record consequential changes as ADRs rather than silently replacing their rationale.
 
 ---
@@ -1579,6 +1579,7 @@ The base is ready for feature expansion only when:
 
 ## 25. Change log
 
+- **2026-08-20:** Added explicit reasoning-off support for the low-latency Ollama/Qwen lane, bounded current-session history with deadline fallback, completion usage/stop diagnostics, readable zero-visible-output failure handling, asynchronously persisted/redacted event envelopes, and opt-in sequenced UTC text logs. No retry model or auxiliary AI check was inserted into the foreground path.
 - **2026-08-20:** Added the dependency-free operator console, negotiated EVAF v1 binary audio and typed status/playback contracts, configurable OpenAI-compatible model and speech adapters, keyless local model profile, active adapter cancellation/cleanup, packaged UI assets, and expanded contract/E2E tests. The default path remains network-free and no auxiliary AI service was added.
 - **2026-08-19:** Implemented the greenfield Python backbone: owned event/session/cancellation contracts, bounded priority mailboxes, context snapshots, typed memory admission and SQLite revisions/FTS, incremental dialogue and fake TTS/model adapters, semantic avatar arbitration, versioned FastAPI/WebSocket tracer, migrations, provenance policy, ADRs, architecture checks, and automated tests.
 - **2026-08-19:** Added Letta Code 0.30.25 audit and revised the plan around tiered context snapshots, local deadline-bound recall, isolated background memory consolidation, class-specific promotion, and WORK-only skill evolution. Explicitly removed auxiliary AI checks/reflection/skill scanning from the realtime first-audio path.

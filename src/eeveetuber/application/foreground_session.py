@@ -8,6 +8,9 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from eeveetuber.application.context_service import CharacterContextService
+from eeveetuber.application.conversation_history import RecentConversationHistoryPolicy
+from eeveetuber.application.conversation_storage import ConversationStorageCoordinator
+from eeveetuber.application.event_recorder import AsyncEventRecorder
 from eeveetuber.dialogue.pipeline import DialogueCancelled, DialoguePipeline
 from eeveetuber.dialogue.ports import AsyncCloseable, ModelProvider, SpeechSynthesizer
 from eeveetuber.dialogue.types import (
@@ -25,6 +28,7 @@ from eeveetuber.domain.events import (
     Visibility,
 )
 from eeveetuber.domain.interaction import InteractionState
+from eeveetuber.observability import get_logger
 from eeveetuber.runtime import (
     SessionActor,
     SessionActorContext,
@@ -34,6 +38,8 @@ from eeveetuber.runtime import (
 )
 from eeveetuber.storage import MessageRecord, MessageRole, SessionRecord, SqliteStore
 from eeveetuber.storage.ids import new_message_id
+
+_LOGGER = get_logger(component="foreground_session")
 
 
 class ForegroundSession:
@@ -49,6 +55,8 @@ class ForegroundSession:
         *,
         inbox_capacity: int = 128,
         outbox_capacity: int = 256,
+        event_recorder_capacity: int = 8_192,
+        history_policy: RecentConversationHistoryPolicy | None = None,
     ) -> None:
         self._supervisor = supervisor
         self._context_service = context_service
@@ -57,6 +65,15 @@ class ForegroundSession:
         self._speech = speech
         self._inbox_capacity = inbox_capacity
         self._outbox_capacity = outbox_capacity
+        self._conversation_storage = ConversationStorageCoordinator(
+            store,
+            context_service,
+            history_policy or RecentConversationHistoryPolicy(),
+        )
+        self._event_recorder = AsyncEventRecorder(
+            self._store.events,
+            capacity=event_recorder_capacity,
+        )
         self._actor: SessionActor | None = None
         self._message_sequence = 0
 
@@ -77,24 +94,32 @@ class ForegroundSession:
             self._handle_message,
             inbox_capacity=self._inbox_capacity,
             outbox_capacity=self._outbox_capacity,
+            event_observer=self._event_recorder.observe,
         )
         self._actor = actor
-        await asyncio.to_thread(
-            self._store.sessions.create,
-            SessionRecord(
-                session_id=str(actor.session_id),
-                namespace=self._context_service.namespace,
-                created_at=datetime.now(UTC),
-                metadata={"transport": "websocket", "schema_version": 1},
-            ),
-        )
-        await actor.publish_result(
-            self._output_event(
-                "session.ready",
-                {"generation": 0, "interaction_state": InteractionState.IDLE.value},
-            ),
-            actor.current_generation,
-        )
+        try:
+            await asyncio.to_thread(
+                self._store.sessions.create,
+                SessionRecord(
+                    session_id=str(actor.session_id),
+                    namespace=self._context_service.namespace,
+                    created_at=datetime.now(UTC),
+                    metadata={"transport": "websocket", "schema_version": 1},
+                ),
+            )
+            self._event_recorder.start()
+            await actor.publish_result(
+                self._output_event(
+                    "session.ready",
+                    {"generation": 0, "interaction_state": InteractionState.IDLE.value},
+                ),
+                actor.current_generation,
+            )
+        except BaseException:
+            await self._supervisor.stop_session(actor.session_id, graceful=False)
+            await self._event_recorder.close()
+            self._actor = None
+            raise
 
     async def submit_text(self, text: str, *, actor_id: str = "owner") -> SessionSubmission:
         stripped = text.strip()
@@ -191,6 +216,22 @@ class ForegroundSession:
     async def stop(self) -> None:
         if self._actor is not None:
             await self._supervisor.stop_session(self._actor.session_id, graceful=False)
+        await self._conversation_storage.drain()
+        recorder_stats = await self._event_recorder.close()
+        if recorder_stats.dropped or recorder_stats.failures:
+            _LOGGER.warning(
+                "event_recorder_closed_with_loss",
+                session_id=str(self._actor.session_id) if self._actor else None,
+                persisted=recorder_stats.persisted,
+                dropped=recorder_stats.dropped,
+                failures=recorder_stats.failures,
+            )
+        else:
+            _LOGGER.debug(
+                "event_recorder_closed",
+                session_id=str(self._actor.session_id) if self._actor else None,
+                persisted=recorder_stats.persisted,
+            )
         closed: set[int] = set()
         for adapter in (self._model, self._speech):
             if isinstance(adapter, AsyncCloseable) and id(adapter) not in closed:
@@ -257,19 +298,19 @@ class ForegroundSession:
             raise TypeError("turn.requested payload is invalid")
         turn_id = UUID(raw_turn_id)
         user_sequence = self._next_message_sequence()
-        context.spawn(
-            self._persist_message(
-                MessageRecord(
-                    message_id=new_message_id(),
-                    session_id=str(context.session_id),
-                    sequence=user_sequence,
-                    role=MessageRole.USER,
-                    content=raw_text,
-                    created_at=message.event.occurred_at,
-                    actor_id=message.event.actor_id,
-                    source_event_id=str(message.event.event_id),
-                    metadata={"turn_id": str(turn_id), "generation": context.generation.value},
-                )
+        assistant_sequence = self._next_message_sequence()
+        self._conversation_storage.persist_message(
+            context,
+            MessageRecord(
+                message_id=new_message_id(),
+                session_id=str(context.session_id),
+                sequence=user_sequence,
+                role=MessageRole.USER,
+                content=raw_text,
+                created_at=message.event.occurred_at,
+                actor_id=message.event.actor_id,
+                source_event_id=str(message.event.event_id),
+                metadata={"turn_id": str(turn_id), "generation": context.generation.value},
             ),
             name=f"persist-user:{turn_id}",
         )
@@ -285,7 +326,14 @@ class ForegroundSession:
             )
         )
         context.spawn(
-            self._run_turn(context, message, turn_id, raw_text),
+            self._run_turn(
+                context,
+                message,
+                turn_id,
+                raw_text,
+                user_sequence,
+                assistant_sequence,
+            ),
             name=f"dialogue:{turn_id}",
         )
 
@@ -322,11 +370,19 @@ class ForegroundSession:
         message: SessionMessage,
         turn_id: UUID,
         user_text: str,
+        user_sequence: int,
+        assistant_sequence: int,
     ) -> None:
         try:
+            history = await self._conversation_storage.load_recent_history(
+                session_id=str(context.session_id),
+                before_sequence=user_sequence,
+                before_generation=context.generation.value,
+            )
             snapshot = self._context_service.compile_for_turn(context.session_id, turn_id)
-            context.spawn(
-                self._context_service.persist_snapshot(snapshot),
+            self._conversation_storage.persist_snapshot(
+                context,
+                snapshot,
                 name=f"persist-context:{turn_id}",
             )
             await context.publish(
@@ -350,13 +406,21 @@ class ForegroundSession:
                 ),
             )
             first_segment = True
+            system_context = snapshot.rendered_context
+            if history.rendered_context:
+                system_context = f"{system_context}\n{history.rendered_context}"
             async for output in pipeline.run(
                 request=DialogueRequest(
                     context.session_id,
                     turn_id,
                     context.generation.value,
                     user_text,
-                    snapshot.rendered_context,
+                    system_context,
+                    metadata={
+                        "context_snapshot_id": snapshot.snapshot_id,
+                        "history_message_count": str(len(history.messages)),
+                        "history_character_count": str(history.character_count),
+                    },
                 ),
                 cancellation=message.token,
             ):
@@ -404,39 +468,86 @@ class ForegroundSession:
                         )
                     )
                 elif isinstance(output, UtteranceCompleted):
-                    await context.publish(
-                        self._output_event(
-                            "utterance.completed",
-                            {
-                                "turn_id": str(turn_id),
-                                "generation": context.generation.value,
-                                "speakable_text": output.plan.speakable_text,
-                                "display_text": output.plan.display_text,
-                                "segment_count": len(output.plan.segments),
-                                "stop_reason": output.plan.stop_reason.value,
-                            },
-                            cause=message.event,
-                            retention=RetentionClass.TRANSCRIPT,
-                        )
-                    )
-                    assistant_sequence = self._next_message_sequence()
-                    context.spawn(
-                        self._persist_message(
-                            MessageRecord(
-                                message_id=new_message_id(),
-                                session_id=str(context.session_id),
-                                sequence=assistant_sequence,
-                                role=MessageRole.ASSISTANT,
-                                content=output.plan.display_text,
-                                created_at=datetime.now(UTC),
-                                source_event_id=str(message.event.event_id),
-                                metadata={
+                    if not output.plan.segments:
+                        detail = _empty_output_detail(output.plan.stop_reason.value)
+                        published = await context.publish(
+                            self._output_event(
+                                "turn.failed",
+                                {
                                     "turn_id": str(turn_id),
                                     "generation": context.generation.value,
+                                    "error_type": "ModelEmptyOutput",
+                                    "detail": detail,
+                                    "recoverable": True,
+                                    "stop_reason": output.plan.stop_reason.value,
+                                    "input_tokens": output.plan.input_tokens,
+                                    "output_tokens": output.plan.output_tokens,
                                 },
+                                cause=message.event,
+                                priority=EventPriority.HIGH,
                             )
-                        ),
-                        name=f"persist-assistant:{turn_id}",
+                        )
+                        _LOGGER.warning(
+                            "model_empty_output",
+                            session_id=str(context.session_id),
+                            turn_id=str(turn_id),
+                            generation=context.generation.value,
+                            stop_reason=output.plan.stop_reason.value,
+                            input_tokens=output.plan.input_tokens,
+                            output_tokens=output.plan.output_tokens,
+                        )
+                        if published:
+                            await context.transition_interaction_if_current(
+                                InteractionState.DEGRADED,
+                                reason="model completed without visible output",
+                            )
+                        return
+                    async with self._conversation_storage.registration_lock:
+                        published = await context.publish(
+                            self._output_event(
+                                "utterance.completed",
+                                {
+                                    "turn_id": str(turn_id),
+                                    "generation": context.generation.value,
+                                    "speakable_text": output.plan.speakable_text,
+                                    "display_text": output.plan.display_text,
+                                    "segment_count": len(output.plan.segments),
+                                    "stop_reason": output.plan.stop_reason.value,
+                                    "input_tokens": output.plan.input_tokens,
+                                    "output_tokens": output.plan.output_tokens,
+                                },
+                                cause=message.event,
+                                retention=RetentionClass.TRANSCRIPT,
+                            )
+                        )
+                        assistant_text = output.plan.display_text.strip()
+                        if published and assistant_text:
+                            self._conversation_storage.persist_message(
+                                context,
+                                MessageRecord(
+                                    message_id=new_message_id(),
+                                    session_id=str(context.session_id),
+                                    sequence=assistant_sequence,
+                                    role=MessageRole.ASSISTANT,
+                                    content=assistant_text,
+                                    created_at=datetime.now(UTC),
+                                    source_event_id=str(message.event.event_id),
+                                    metadata={
+                                        "turn_id": str(turn_id),
+                                        "generation": context.generation.value,
+                                    },
+                                ),
+                                name=f"persist-assistant:{turn_id}",
+                            )
+                    _LOGGER.debug(
+                        "model_turn_completed",
+                        session_id=str(context.session_id),
+                        turn_id=str(turn_id),
+                        generation=context.generation.value,
+                        stop_reason=output.plan.stop_reason.value,
+                        input_tokens=output.plan.input_tokens,
+                        output_tokens=output.plan.output_tokens,
+                        segment_count=len(output.plan.segments),
                     )
             await context.transition_interaction_if_current(
                 InteractionState.IDLE,
@@ -454,6 +565,8 @@ class ForegroundSession:
                         "turn_id": str(turn_id),
                         "generation": context.generation.value,
                         "error_type": type(error).__name__,
+                        "detail": "The turn failed before a reply could be produced.",
+                        "recoverable": True,
                     },
                     cause=message.event,
                     priority=EventPriority.HIGH,
@@ -500,9 +613,6 @@ class ForegroundSession:
         self._message_sequence += 1
         return self._message_sequence
 
-    async def _persist_message(self, record: MessageRecord) -> None:
-        await asyncio.to_thread(self._store.messages.append, record)
-
     def _output_event(
         self,
         event_type: str,
@@ -524,3 +634,12 @@ class ForegroundSession:
             priority=priority,
             retention=retention,
         )
+
+
+def _empty_output_detail(stop_reason: str) -> str:
+    if stop_reason == "length":
+        return (
+            "The model reached its output limit before producing visible text. "
+            "For realtime chat, use reasoning_effort=none or increase the output limit."
+        )
+    return "The model returned no visible text. Please try the turn again."

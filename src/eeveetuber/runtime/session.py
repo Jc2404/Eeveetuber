@@ -73,6 +73,16 @@ class SessionHandler(Protocol):
     ) -> None: ...
 
 
+class SessionEventObserver(Protocol):
+    """Non-blocking notification for accepted, owner-stamped session events.
+
+    Observers run on the session event loop and therefore must only enqueue work.  Persistence,
+    network I/O, and other waits belong in an observer-owned background task.
+    """
+
+    def __call__(self, event: EventEnvelope) -> None: ...
+
+
 class SessionActorContext:
     """Narrow capability passed to the serialized session handler."""
 
@@ -151,6 +161,7 @@ class SessionActor:
         inbox_overflow: OverflowPolicy = OverflowPolicy.DROP_LOWEST,
         inbox_coalesce_key: Callable[[SessionMessage], Hashable | None] | None = None,
         inbox_coalescer: Callable[[SessionMessage, SessionMessage], SessionMessage] | None = None,
+        event_observer: SessionEventObserver | None = None,
     ) -> None:
         if inbox_overflow is OverflowPolicy.COALESCE and inbox_coalesce_key is None:
             raise ValueError("a coalescing session inbox requires inbox_coalesce_key")
@@ -170,6 +181,8 @@ class SessionActor:
         )
         self._cancellation = CancellationSource()
         self._interaction = InteractionStateMachine()
+        self._event_observer = event_observer
+        self._event_observer_failures = 0
         self._lifecycle = SessionLifecycle.NEW
         self._failure: BaseException | None = None
         self._actor_task: asyncio.Task[None] | None = None
@@ -213,6 +226,10 @@ class SessionActor:
     @property
     def outbox_size(self) -> int:
         return self._outbox.qsize
+
+    @property
+    def event_observer_failures(self) -> int:
+        return self._event_observer_failures
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
@@ -269,6 +286,8 @@ class SessionActor:
                 return False
             stamped = await self._stamp(event)
             result = await self._outbox.put(stamped)
+            if result.accepted:
+                self._observe_event(stamped)
             return result.accepted
 
     async def receive_output(self) -> EventEnvelope:
@@ -363,6 +382,8 @@ class SessionActor:
         stamped = await self._stamp(event)
         message = SessionMessage(stamped, token)
         result: PutResult[SessionMessage] = await self._inbox.put(message)
+        if result.accepted:
+            self._observe_event(stamped)
         displaced_id = result.displaced.event.event_id if result.displaced else None
         return SessionSubmission(
             generation=token.generation,
@@ -377,6 +398,16 @@ class SessionActor:
             sequence = self._sequence
             self._sequence += 1
         return scoped.with_sequence(sequence)
+
+    def _observe_event(self, event: EventEnvelope) -> None:
+        observer = self._event_observer
+        if observer is None:
+            return
+        try:
+            observer(event)
+        except Exception:
+            # Observability must never take down or delay the real-time session path.
+            self._event_observer_failures += 1
 
     def _ensure_running(self) -> None:
         if self._lifecycle is not SessionLifecycle.RUNNING:
@@ -473,12 +504,14 @@ class SessionSupervisor:
         session_id: UUID | None = None,
         inbox_capacity: int = 128,
         outbox_capacity: int = 256,
+        event_observer: SessionEventObserver | None = None,
     ) -> SessionActor:
         actor = SessionActor(
             handler,
             session_id=session_id,
             inbox_capacity=inbox_capacity,
             outbox_capacity=outbox_capacity,
+            event_observer=event_observer,
         )
         async with self._lock:
             if self._closed:

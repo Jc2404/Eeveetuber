@@ -115,6 +115,39 @@ class MessageRepository:
             ).all()
             return tuple(_message_record(row) for row in rows)
 
+    def list_recent_before(
+        self,
+        session_id: str,
+        *,
+        before_sequence: int,
+        limit: int,
+    ) -> Sequence[MessageRecord]:
+        """Return the newest bounded prefix before a stable sequence cursor.
+
+        The SQL query uses the unique ``(session_id, sequence)`` index and applies
+        ``LIMIT`` before materialization. Results are reversed back into prompt-safe
+        chronological order.
+        """
+
+        if before_sequence < 1:
+            raise ValueError("before_sequence must be positive")
+        if not 1 <= limit <= 1_000:
+            raise ValueError("limit must be between 1 and 1000")
+        with self._session_factory() as session:
+            rows = list(
+                session.scalars(
+                    select(MessageRow)
+                    .where(
+                        MessageRow.session_id == session_id,
+                        MessageRow.sequence < before_sequence,
+                    )
+                    .order_by(MessageRow.sequence.desc())
+                    .limit(limit)
+                ).all()
+            )
+            rows.reverse()
+            return tuple(_message_record(row) for row in rows)
+
     def search(self, query: str, *, session_id: str | None = None, limit: int = 5) -> Sequence[MessageSearchHit]:
         if not self._fts_available():
             raise SearchUnavailable("this SQLite build does not provide FTS5")

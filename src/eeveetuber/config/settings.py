@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from platformdirs import user_data_path
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from eeveetuber.config.providers import ModelAdapterSettings, SpeechAdapterSettings
@@ -39,17 +39,37 @@ class AppSettings(BaseSettings):
     data_dir: Path = Field(
         default_factory=lambda: user_data_path("Eeveetuber", appauthor=False, ensure_exists=False)
     )
+    log_dir: Path | None = None
+    log_filename: str = Field(default="eeveetuber.log", min_length=1, max_length=255)
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, ge=64 * 1024, le=1024 * 1024 * 1024)
+    log_backup_count: int = Field(default=3, ge=1, le=100)
     database_filename: str = "eeveetuber.db"
     session_mailbox_capacity: int = Field(default=128, ge=8, le=65_536)
     websocket_send_capacity: int = Field(default=256, ge=8, le=65_536)
+    event_recorder_capacity: int = Field(default=8_192, ge=128, le=1_000_000)
     context: ContextBudgetSettings = Field(default_factory=ContextBudgetSettings)
     model: ModelAdapterSettings = Field(default_factory=ModelAdapterSettings)
     speech: SpeechAdapterSettings = Field(default_factory=SpeechAdapterSettings)
+
+    @field_validator("log_filename")
+    @classmethod
+    def validate_log_filename(cls, value: str) -> str:
+        if not value.strip() or value in {".", ".."} or Path(value).name != value:
+            raise ValueError("log_filename must be a plain filename, not a path")
+        return value
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_path(self) -> Path:
         return self.data_dir / self.database_filename
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def verbose_log_path(self) -> Path:
+        """Resolved opt-in text log; no directory is created until requested."""
+
+        directory = self.log_dir if self.log_dir is not None else self.data_dir / "logs"
+        return directory / self.log_filename
 
     @computed_field  # type: ignore[prop-decorator]
     @property

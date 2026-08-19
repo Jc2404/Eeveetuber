@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from eeveetuber.memory.models import FrozenModel
 
@@ -36,6 +36,12 @@ class MessageRecord(FrozenModel):
     actor_id: str | None = None
     source_event_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def reject_blank_conversation_content(self) -> MessageRecord:
+        if self.role in {MessageRole.USER, MessageRole.ASSISTANT} and not self.content.strip():
+            raise ValueError(f"{self.role.value} message content cannot be blank")
+        return self
 
 
 class EventRecord(FrozenModel):
@@ -81,4 +87,3 @@ class OutboxItem(FrozenModel):
     available_at: datetime
     attempts: int = Field(default=0, ge=0)
     completed_at: datetime | None = None
-

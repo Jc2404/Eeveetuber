@@ -146,6 +146,67 @@ async def test_local_endpoint_needs_no_api_key_or_separate_adapter() -> None:
     payload = captured["payload"]
     assert isinstance(payload, dict)
     assert "stream_options" not in payload
+    assert "reasoning_effort" not in payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", list(ReasoningEffort))
+async def test_reasoning_effort_values_are_sent_without_collapsing_none(
+    effort: ReasoningEffort,
+) -> None:
+    captured_payload: dict[str, object] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_payload.update(json.loads(request.content))
+        return httpx.Response(200, content=b"data: [DONE]\n\n")
+
+    config = OpenAICompatibleModelConfig(
+        base_url="http://127.0.0.1:11434/v1",
+        model="local-model",
+        reasoning_effort=effort,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await _collect(OpenAICompatibleModelProvider(config, client=client))
+
+    assert captured_payload["reasoning_effort"] == effort.value
+
+
+@pytest.mark.asyncio
+async def test_ollama_style_empty_completion_preserves_finish_and_zero_usage() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}],
+                    "usage": {
+                        "prompt_tokens": 27,
+                        "completion_tokens": 0,
+                        "total_tokens": 27,
+                    },
+                }
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        events = await _collect(
+            OpenAICompatibleModelProvider(
+                OpenAICompatibleModelConfig(
+                    "http://127.0.0.1:11434/v1",
+                    "local-model",
+                    reasoning_effort=ReasoningEffort.NONE,
+                ),
+                client=client,
+            )
+        )
+
+    assert events == [
+        ModelCompleted(
+            stop_reason=ModelStopReason.LENGTH,
+            input_tokens=27,
+            output_tokens=0,
+        )
+    ]
 
 
 @pytest.mark.asyncio

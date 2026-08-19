@@ -78,6 +78,7 @@ button.quiet { margin-left: auto; padding: 0.35rem 0.6rem; background: transpare
 .history li { margin: 0.55rem 0; padding: 0.65rem 0.8rem; border-radius: 0.6rem; background: #202638; }
 .history li.owner { margin-left: 12%; background: #332b62; }
 .history li.character { margin-right: 12%; }
+.history li.system { margin-right: 12%; border: 1px solid #7d5f37; background: #322a20; }
 .history .role { display: block; margin-bottom: 0.2rem; color: #aeb8cf; font-size: 0.75rem; text-transform: uppercase; }
 
 .event-log { max-height: 18rem; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 0.8rem; }

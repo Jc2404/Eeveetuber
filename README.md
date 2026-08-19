@@ -23,7 +23,10 @@ The Phase 1 provider and operator slice now provides:
 - negotiated EVAF v1 binary audio frames, ordered browser playback, and correlated playback
   acknowledgements;
 - configurable OpenAI-compatible streaming model and speech adapters, including keyless local
-  model endpoints such as Ollama's OpenAI-compatible route.
+  model endpoints such as Ollama's OpenAI-compatible route;
+- bounded, deadline-limited recent conversation context within each connected session;
+- off-path SQLite event journaling with audio bytes redacted, plus explicit diagnostics when a
+  model consumes its budget without emitting visible text.
 
 The zero-configuration default remains fake model and fake speech. Microphone/VAD/ASR, Live2D,
 selected-image input, and public-chat adapters are not implemented yet.
@@ -38,6 +41,23 @@ Open `http://127.0.0.1:12393/`, connect, and send a text turn. With the default 
 model echoes the message and speech is deliberately fake, so the browser will report that the
 fake payload cannot be decoded while still exercising the complete transport and acknowledgement path.
 
+### Optional verbose file log
+
+Normal runs log only to the console. Add `--verbose` when diagnosing a local run:
+
+```powershell
+uv run eeveetuber --verbose
+```
+
+This adds a rotating, human-readable DEBUG log at `<data directory>/logs/eeveetuber.log`. Each
+line starts with a UTC timestamp and process-local sequence such as `#000123`. Structured secret,
+conversation-text, and private-reasoning fields are redacted; transcripts and durable events remain
+in their dedicated stores rather than the diagnostic log.
+
+The location and rotation can be changed with `EEVEETUBER_LOG_DIR`,
+`EEVEETUBER_LOG_FILENAME`, `EEVEETUBER_LOG_MAX_BYTES`, and
+`EEVEETUBER_LOG_BACKUP_COUNT`. The log directory is not created unless `--verbose` is enabled.
+
 ## Configure a real model or speech endpoint
 
 Settings use the `EEVEETUBER_` prefix and `__` for nested fields. Copy the relevant lines from
@@ -48,9 +68,19 @@ into a local `.env` file. For example:
 EEVEETUBER_MODEL__PROVIDER=openai_compatible
 EEVEETUBER_MODEL__BASE_URL=http://127.0.0.1:11434/v1
 EEVEETUBER_MODEL__MODEL=replace-with-your-local-model
+EEVEETUBER_MODEL__REASONING_EFFORT=none
+EEVEETUBER_MODEL__MAX_OUTPUT_TOKENS=512
 ```
 
 Omit the API key for a trusted local endpoint. Keep `.env` private; it is excluded from Git.
+For reasoning-capable Ollama chat models, the literal value `none` disables hidden reasoning on
+the low-latency conversation path. Omitting the setting is different: Eeveetuber then omits the
+request field and the provider chooses its default.
+
+Session messages, context snapshots, and redacted event envelopes are persisted in
+`<data directory>/eeveetuber.db`. Recent messages from the current connected session are included
+in later turns under strict count, character, and 50 ms local-read bounds. New sessions do not yet
+receive automatic cross-session memory; long-term memory extraction remains a later milestone.
 
 ## Development
 
